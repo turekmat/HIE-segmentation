@@ -269,6 +269,8 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
     num_subjects = len(all_subjects)
     fold_size = num_subjects // n_folds
     
+    print(f"Celkem {num_subjects} unikátních subjektů, vytváříme {n_folds}-fold cross-validaci.\n")
+    
     folds = []
     for fold_idx in range(n_folds):
         # Výběr validačních subjektů
@@ -280,31 +282,26 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
         # Výběr validačních indexů
         val_indices = []
         if extended_dataset:
+            # Pokud máme rozšířený dataset, vybíráme pouze _orig_ soubory nebo soubory bez označení
             for subj_id in val_subjects:
                 indices_for_subject = subject_to_indices[subj_id]
                 for idx in indices_for_subject:
                     adc_fname = all_files[idx]
-                    if "_orig" in adc_fname.lower() or ("_aug" not in adc_fname.lower() and "_orig" not in adc_fname.lower()):
+                    if "_orig_" in adc_fname.lower() or ("_aug" not in adc_fname.lower() and "_orig" not in adc_fname.lower()):
                         val_indices.append(idx)
         else:
+            # Klasický dataset: použijeme všechny soubory daného subjektu
             for subj_id in val_subjects:
                 indices_for_subject = subject_to_indices[subj_id]
                 val_indices.extend(indices_for_subject)
         
-        # Výběr trénovacích indexů
+        # Výběr trénovacích indexů - všechny soubory subjektů, které nejsou ve validaci
         train_indices = []
-        if extended_dataset:
-            # Vyloučíme jakékoli soubory (orig i aug) odpovídající validačním subjektům
-            for subj_id in train_subjects:
-                indices_for_subject = subject_to_indices[subj_id]
-                # Přidáme všechny soubory (orig i aug) odpovídající trénovacím subjektům
-                train_indices.extend(indices_for_subject)
-        else:
-            for subj_id in train_subjects:
-                indices_for_subject = subject_to_indices[subj_id]
-                train_indices.extend(indices_for_subject)
+        for subj_id in train_subjects:
+            indices_for_subject = subject_to_indices[subj_id]
+            train_indices.extend(indices_for_subject)
         
-        print(f"Fold {fold_idx+1}: trénovací vzorky: {len(train_indices)}, validační vzorky: {len(val_indices)}")
+        print(f"Fold {fold_idx+1}: Val subjekty={len(val_subjects)}, Val vzorky={len(val_indices)}, Trén subjekty={len(train_subjects)}, Trén vzorky={len(train_indices)}")
         folds.append((train_indices, val_indices))
     
     return folds

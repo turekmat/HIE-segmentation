@@ -6,7 +6,7 @@ import random
 from torch.utils.data import Dataset
 import re
 
-from .preprocessing import random_3d_augmentation, filter_augmented_files
+from .preprocessing import random_3d_augmentation, filter_augmented_files, get_base_id
 
 class BONBID3DFullVolumeDataset(Dataset):
     """
@@ -147,11 +147,32 @@ class BONBID3DPatchDataset(Dataset):
 def get_subject_id_from_filename(filename: str):
     """
     Extrahuje ID subjektu (pacient) z názvu souboru.
+    Podporuje různé formáty názvů souborů.
     """
+    # Zkus najít ID s podtržítkem před a za číslem (např. _123_)
     match = re.search(r'_(\d+)_', filename)
     if match:
         return match.group(1)
-    return None
+    
+    # Pokus najít ID na začátku s podtržítkem za ním (např. 123_)
+    match = re.search(r'^(\d+)_', filename)
+    if match:
+        return match.group(1)
+    
+    # Pokus najít ID pomocí get_base_id
+    base_id = get_base_id(filename)
+    if base_id:
+        match = re.search(r'(\d+)', base_id)
+        if match:
+            return match.group(1)
+    
+    # Poslední pokus - jakékoliv číslo v názvu
+    match = re.search(r'(\d+)', filename)
+    if match:
+        return match.group(1)
+    
+    # Pokud nic nenajdeme, vrátíme celý název souboru
+    return filename
 
 
 def extract_patient_id(filepath):
