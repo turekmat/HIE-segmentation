@@ -81,7 +81,7 @@ def run_cross_validation(config):
         adc_folder=config["adc_folder"],
         z_folder=config["z_folder"],
         label_folder=config["label_folder"],
-        use_augmentation=False,
+        augment=False,
         allowed_patient_ids=config.get("allowed_patient_ids", None)
     )
     
@@ -109,7 +109,7 @@ def run_cross_validation(config):
                 adc_folder=config["adc_folder"],
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
-                use_augmentation=config["use_augmentation"],
+                augment=config["use_augmentation"],
                 indices=train_indices
             )
             
@@ -123,7 +123,7 @@ def run_cross_validation(config):
                 adc_folder=config["adc_folder"],
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
-                use_augmentation=False,
+                augment=False,
                 indices=val_indices
             )
             
@@ -134,7 +134,7 @@ def run_cross_validation(config):
                 adc_folder=config["adc_folder"],
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
-                use_augmentation=config["use_augmentation"],
+                augment=config["use_augmentation"],
                 indices=train_indices
             )
             
@@ -142,7 +142,7 @@ def run_cross_validation(config):
                 adc_folder=config["adc_folder"],
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
-                use_augmentation=False,
+                augment=False,
                 indices=val_indices
             )
         
