@@ -6,6 +6,7 @@ import wandb
 import random
 import numpy as np
 from pathlib import Path
+from torch.utils.data import Subset
 
 # Automatické přihlášení k Weights & Biases pomocí Kaggle secrets (pokud běží v Kaggle)
 if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
@@ -82,7 +83,9 @@ def run_cross_validation(config):
         z_folder=config["z_folder"],
         label_folder=config["label_folder"],
         augment=False,
-        allowed_patient_ids=config.get("allowed_patient_ids", None)
+        allowed_patient_ids=config.get("allowed_patient_ids", None),
+        extended_dataset=config["extended_dataset"],
+        max_aug_per_orig=config.get("max_aug_per_orig", 0)
     )
     
     # Vytvoření foldů
@@ -110,8 +113,12 @@ def run_cross_validation(config):
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
                 augment=config["use_augmentation"],
-                indices=train_indices
+                extended_dataset=config["extended_dataset"],
+                max_aug_per_orig=config.get("max_aug_per_orig", 0)
             )
+            
+            # Použití indexů pomocí IndexedDatasetWrapper
+            train_dataset_full = Subset(train_dataset_full, train_indices)
             
             train_dataset = BONBID3DPatchDataset(
                 full_volume_dataset=train_dataset_full,
@@ -124,27 +131,37 @@ def run_cross_validation(config):
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
                 augment=False,
-                indices=val_indices
+                extended_dataset=config["extended_dataset"],
+                max_aug_per_orig=config.get("max_aug_per_orig", 0)
             )
             
-            val_dataset = val_dataset_full  # Validace na celých volumech
+            # Použití indexů pomocí IndexedDatasetWrapper
+            val_dataset = Subset(val_dataset_full, val_indices)
         else:
             # Full-volume training
-            train_dataset = BONBID3DFullVolumeDataset(
+            train_dataset_full = BONBID3DFullVolumeDataset(
                 adc_folder=config["adc_folder"],
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
                 augment=config["use_augmentation"],
-                indices=train_indices
+                extended_dataset=config["extended_dataset"],
+                max_aug_per_orig=config.get("max_aug_per_orig", 0)
             )
             
-            val_dataset = BONBID3DFullVolumeDataset(
+            # Použití indexů pomocí IndexedDatasetWrapper
+            train_dataset = Subset(train_dataset_full, train_indices)
+            
+            val_dataset_full = BONBID3DFullVolumeDataset(
                 adc_folder=config["adc_folder"],
                 z_folder=config["z_folder"],
                 label_folder=config["label_folder"],
                 augment=False,
-                indices=val_indices
+                extended_dataset=config["extended_dataset"],
+                max_aug_per_orig=config.get("max_aug_per_orig", 0)
             )
+            
+            # Použití indexů pomocí IndexedDatasetWrapper
+            val_dataset = Subset(val_dataset_full, val_indices)
         
         # Nastavení trénování
         model, optimizer, loss_fn, scheduler, train_loader, val_loader = setup_training(
@@ -407,6 +424,8 @@ def main():
     parser.add_argument("--label_folder", type=str, help="Cesta ke složce s ground truth maskami")
     parser.add_argument("--extended_dataset", action="store_true", 
                         help="Použít rozšířený dataset (s aug/orig soubory)")
+    parser.add_argument("--max_aug_per_orig", type=int, default=0,
+                        help="Maximální počet augmentovaných souborů na jeden originální")
     
     # Argumenty modelu
     parser.add_argument("--model_name", type=str, help="Jméno modelu")
@@ -428,6 +447,7 @@ def main():
     parser.add_argument("--n_folds", type=int, help="Počet foldů pro cross-validaci")
     parser.add_argument("--use_ohem", action="store_true", help="Povolit Online Hard Example Mining")
     parser.add_argument("--ohem_ratio", type=float, default=0.15, help="Poměr těžkých příkladů pro OHEM")
+    parser.add_argument("--ohem_start_epoch", type=int, default=1, help="Epocha, od které se začne používat OHEM")
     parser.add_argument("--patches_per_volume", type=int, help="Počet patchů na objem při patch-based trénování")
     parser.add_argument("--patch_size", type=int, nargs=3, help="Velikost patche (3 hodnoty: výška, šířka, hloubka)")
     parser.add_argument("--inference_every_n_epochs", type=int, default=0, help="Provést inferenci každých N epoch (0 = vypnuto)")

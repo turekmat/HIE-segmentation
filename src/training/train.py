@@ -284,7 +284,7 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
                 indices_for_subject = subject_to_indices[subj_id]
                 for idx in indices_for_subject:
                     adc_fname = all_files[idx]
-                    if "_orig_" in adc_fname.lower():
+                    if "_orig" in adc_fname.lower() or ("_aug" not in adc_fname.lower() and "_orig" not in adc_fname.lower()):
                         val_indices.append(idx)
         else:
             for subj_id in val_subjects:
@@ -293,10 +293,18 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
         
         # Výběr trénovacích indexů
         train_indices = []
-        for subj_id in train_subjects:
-            indices_for_subject = subject_to_indices[subj_id]
-            train_indices.extend(indices_for_subject)
+        if extended_dataset:
+            # Vyloučíme jakékoli soubory (orig i aug) odpovídající validačním subjektům
+            for subj_id in train_subjects:
+                indices_for_subject = subject_to_indices[subj_id]
+                # Přidáme všechny soubory (orig i aug) odpovídající trénovacím subjektům
+                train_indices.extend(indices_for_subject)
+        else:
+            for subj_id in train_subjects:
+                indices_for_subject = subject_to_indices[subj_id]
+                train_indices.extend(indices_for_subject)
         
+        print(f"Fold {fold_idx+1}: trénovací vzorky: {len(train_indices)}, validační vzorky: {len(val_indices)}")
         folds.append((train_indices, val_indices))
     
     return folds
