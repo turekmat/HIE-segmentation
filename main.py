@@ -426,6 +426,11 @@ def main():
     parser.add_argument("--no_augmentation", action="store_false", dest="use_augmentation",
                         help="Vypnout augmentaci dat")
     parser.add_argument("--n_folds", type=int, help="Počet foldů pro cross-validaci")
+    parser.add_argument("--use_ohem", action="store_true", help="Povolit Online Hard Example Mining")
+    parser.add_argument("--ohem_ratio", type=float, default=0.15, help="Poměr těžkých příkladů pro OHEM")
+    parser.add_argument("--patches_per_volume", type=int, help="Počet patchů na objem při patch-based trénování")
+    parser.add_argument("--patch_size", type=int, nargs=3, help="Velikost patche (3 hodnoty: výška, šířka, hloubka)")
+    parser.add_argument("--inference_every_n_epochs", type=int, default=0, help="Provést inferenci každých N epoch (0 = vypnuto)")
     
     # Argumenty inference
     parser.add_argument("--inference_mode", type=str, choices=["standard", "moe"], default="standard", 
