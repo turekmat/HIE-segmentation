@@ -66,6 +66,35 @@ def run_cross_validation(config):
             print(f"Chyba: Složka {folder} neexistuje!")
             sys.exit(1)
     
+    # Provedení preprocessingu, pokud je požadováno
+    if config.get("preprocessing", False):
+        from src.data.preprocessing import prepare_preprocessed_data
+        
+        # Nastavení cest pro předzpracovaná data
+        preprocessed_adc = config.get("preprocessed_adc_folder", os.path.join(config["output_dir"], "preprocessed/1ADC_ss"))
+        preprocessed_z = config.get("preprocessed_z_folder", os.path.join(config["output_dir"], "preprocessed/2Z_ADC"))
+        preprocessed_label = config.get("preprocessed_label_folder", os.path.join(config["output_dir"], "preprocessed/3LABEL"))
+        
+        # Spuštění preprocessingu
+        print("\nProvádím preprocessing dat...")
+        prepare_preprocessed_data(
+            adc_folder=config["adc_folder"],
+            z_folder=config["z_folder"],
+            label_folder=config["label_folder"],
+            output_adc=preprocessed_adc,
+            output_z=preprocessed_z,
+            output_label=preprocessed_label,
+            normalize=config.get("use_normalization", False),
+            allow_normalize_spacing=config.get("allow_normalize_spacing", False)
+        )
+        
+        # Aktualizace cest na předzpracovaná data
+        config["adc_folder"] = preprocessed_adc
+        config["z_folder"] = preprocessed_z
+        config["label_folder"] = preprocessed_label
+        
+        print("Preprocessing dokončen. Používám předzpracovaná data pro trénink.\n")
+    
     # Inicializace wandb, pokud je povoleno
     if config["use_wandb"]:
         wandb.init(
@@ -306,6 +335,38 @@ def run_inference(config):
             print(f"Chyba: Složka {folder} neexistuje!")
             sys.exit(1)
     
+    # Provedení preprocessingu, pokud je požadováno
+    if config.get("preprocessing", False):
+        from src.data.preprocessing import prepare_preprocessed_data
+        
+        # Nastavení cest pro předzpracovaná data
+        preprocessed_adc = config.get("preprocessed_adc_folder", os.path.join(config["output_dir"], "preprocessed/1ADC_ss"))
+        preprocessed_z = config.get("preprocessed_z_folder", os.path.join(config["output_dir"], "preprocessed/2Z_ADC"))
+        preprocessed_label = None
+        if config.get("label_folder"):
+            preprocessed_label = config.get("preprocessed_label_folder", os.path.join(config["output_dir"], "preprocessed/3LABEL"))
+        
+        # Spuštění preprocessingu
+        print("\nProvádím preprocessing dat...")
+        prepare_preprocessed_data(
+            adc_folder=config["adc_folder"],
+            z_folder=config["z_folder"],
+            label_folder=config.get("label_folder"),
+            output_adc=preprocessed_adc,
+            output_z=preprocessed_z,
+            output_label=preprocessed_label if preprocessed_label else None,
+            normalize=config.get("use_normalization", False),
+            allow_normalize_spacing=config.get("allow_normalize_spacing", False)
+        )
+        
+        # Aktualizace cest na předzpracovaná data
+        config["adc_folder"] = preprocessed_adc
+        config["z_folder"] = preprocessed_z
+        if config.get("label_folder") and preprocessed_label:
+            config["label_folder"] = preprocessed_label
+        
+        print("Preprocessing dokončen. Používám předzpracovaná data pro inferenci.\n")
+    
     # Kontrola, zda existuje cesta k modelu
     if not os.path.exists(config["model_path"]):
         print(f"Chyba: Model {config['model_path']} neexistuje!")
@@ -480,6 +541,8 @@ def main():
                         help="Použít normalizaci dat")
     parser.add_argument("--allow_normalize_spacing", action="store_true", 
                         help="Povolit normalizaci rozestupů voxelů")
+    parser.add_argument("--preprocessing", action="store_true",
+                        help="Provést preprocessing dat (bounding box, crop, padding) před trénováním")
 
     # Parametry ztráty a metrik
     parser.add_argument("--loss_name", type=str, 
