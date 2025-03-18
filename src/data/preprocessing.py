@@ -21,17 +21,16 @@ def filter_augmented_files(file_list, max_aug):
     grouped = {}
     for f in file_list:
         key = get_base_id(f)
-        if '_orig_' in f.lower():
-            if key not in grouped:
-                grouped[key] = {'orig': None, 'aug': []}
-            grouped[key]['orig'] = f
-        elif '_aug' in f.lower():
+        if '_aug' in f.lower():
+            # Soubor je augmentovaný
             if key not in grouped:
                 grouped[key] = {'orig': None, 'aug': []}
             grouped[key]['aug'].append(f)
         else:
+            # Soubor bez "_aug" je považován za originální
             if key not in grouped:
-                grouped[key] = {'orig': f, 'aug': []}
+                grouped[key] = {'orig': None, 'aug': []}
+            grouped[key]['orig'] = f
 
     filtered_list = []
     for key in sorted(grouped.keys()):
@@ -48,13 +47,13 @@ def filter_augmented_files(file_list, max_aug):
 
 def get_base_id(filename: str):
     """
-    Získá základní ID souboru bez sufixu _orig_ nebo _aug.
+    Získá základní ID souboru bez sufixu _aug.
     """
     filename_lower = filename.lower()
-    if '_orig_' in filename_lower:
-        return filename_lower.split('_orig_')[0]
-    else:
+    if '_aug' in filename_lower:
         return re.sub(r'_aug\d+.*', '', filename_lower)
+    else:
+        return filename_lower
 
 
 def random_3d_augmentation(

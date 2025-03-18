@@ -430,6 +430,9 @@ def main():
     parser.add_argument("--adc_folder", type=str, help="Cesta ke složce s ADC snímky")
     parser.add_argument("--z_folder", type=str, help="Cesta ke složce s Z-ADC snímky")
     parser.add_argument("--label_folder", type=str, help="Cesta ke složce s ground truth maskami")
+    parser.add_argument("--preprocessed_adc_folder", type=str, help="Cesta k předzpracované ADC složce")
+    parser.add_argument("--preprocessed_z_folder", type=str, help="Cesta k předzpracované Z_ADC složce")
+    parser.add_argument("--preprocessed_label_folder", type=str, help="Cesta k předzpracované LABEL složce")
     parser.add_argument("--extended_dataset", action="store_true", 
                         help="Použít rozšířený dataset (s aug/orig soubory)")
     parser.add_argument("--max_aug_per_orig", type=int, default=0,

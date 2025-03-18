@@ -282,12 +282,12 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
         # Výběr validačních indexů
         val_indices = []
         if extended_dataset:
-            # Pokud máme rozšířený dataset, vybíráme pouze _orig_ soubory nebo soubory bez označení
+            # Pokud máme rozšířený dataset, vybíráme pouze soubory bez "_aug" označení
             for subj_id in val_subjects:
                 indices_for_subject = subject_to_indices[subj_id]
                 for idx in indices_for_subject:
                     adc_fname = all_files[idx]
-                    if "_orig_" in adc_fname.lower() or ("_aug" not in adc_fname.lower() and "_orig" not in adc_fname.lower()):
+                    if "_aug" not in adc_fname.lower():
                         val_indices.append(idx)
         else:
             # Klasický dataset: použijeme všechny soubory daného subjektu
