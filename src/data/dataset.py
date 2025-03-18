@@ -12,8 +12,20 @@ class BONBID3DFullVolumeDataset(Dataset):
     """
     Čte 3D volume (ADC, Z_ADC, LABEL) z daných složek. Lze omezit dataset pouze
     na subjekty s patient ID z allowed_patient_ids.
+    
+    Parametry:
+        adc_folder: Složka s ADC soubory
+        z_folder: Složka s Z-ADC soubory (může být None, pokud use_z_adc=False)
+        label_folder: Složka s label soubory
+        augment: Zda použít augmentaci při načítání
+        allowed_patient_ids: Seznam ID pacientů, kteří mají být v datasetu (None = všichni)
+        extended_dataset: Zda se jedná o rozšířený dataset s orig/aug soubory
+        max_aug_per_orig: Maximální počet augmentovaných souborů na jeden originální
+        use_z_adc: Zda používat Z-ADC modalitu (pokud False, použije se pouze ADC)
     """
-    def __init__(self, adc_folder, z_folder, label_folder, augment=False, allowed_patient_ids=None, extended_dataset=True, max_aug_per_orig=0):
+    def __init__(self, adc_folder, z_folder, label_folder, augment=False, 
+                 allowed_patient_ids=None, extended_dataset=True, max_aug_per_orig=0, 
+                 use_z_adc=True):
         super().__init__()
 
         self.adc_folder = adc_folder
@@ -22,9 +34,16 @@ class BONBID3DFullVolumeDataset(Dataset):
         self.augment = augment
         self.extended_dataset = extended_dataset
         self.max_aug_per_orig = max_aug_per_orig
+        self.use_z_adc = use_z_adc
 
         self.adc_files = sorted([f for f in os.listdir(adc_folder) if f.endswith('.mha')])
-        self.z_files   = sorted([f for f in os.listdir(z_folder) if f.endswith('.mha')])
+        
+        if z_folder and use_z_adc:
+            self.z_files = sorted([f for f in os.listdir(z_folder) if f.endswith('.mha')])
+        else:
+            # Pokud nepoužíváme Z-ADC, vytvoříme kopii seznamu ADC souborů pro zachování kompatibility
+            self.z_files = self.adc_files.copy()
+            
         self.lab_files = sorted([f for f in os.listdir(label_folder) if f.endswith('.mha')])
 
         if extended_dataset:
@@ -55,22 +74,35 @@ class BONBID3DFullVolumeDataset(Dataset):
 
     def __getitem__(self, idx):
         adc_path   = os.path.join(self.adc_folder, self.adc_files[idx])
-        zadc_path  = os.path.join(self.z_folder,   self.z_files[idx])
         label_path = os.path.join(self.label_folder, self.lab_files[idx])
 
         adc_np   = sitk.GetArrayFromImage(sitk.ReadImage(adc_path))
-        zadc_np  = sitk.GetArrayFromImage(sitk.ReadImage(zadc_path))
         label_np = sitk.GetArrayFromImage(sitk.ReadImage(label_path))
+
+        # Načtení Z-ADC mapy pouze pokud se používá
+        if self.use_z_adc and self.z_folder:
+            zadc_path = os.path.join(self.z_folder, self.z_files[idx])
+            zadc_np  = sitk.GetArrayFromImage(sitk.ReadImage(zadc_path))
+        else:
+            # Vytvoříme dummy tensor nulový, který nahradíme později (nebude použit)
+            zadc_np = np.zeros_like(adc_np)
 
         if self.augment:
             adc_np, zadc_np, label_np = random_3d_augmentation(adc_np, zadc_np, label_np)
 
-        # Převedeme na Torch tensor – vstupní tvar bude (2, D, H, W)
+        # Převedeme na Torch tensor
         adc_t  = torch.from_numpy(adc_np).unsqueeze(0)
-        zadc_t = torch.from_numpy(zadc_np).unsqueeze(0)
-        input_3d = torch.cat([adc_t, zadc_t], dim=0)
-        label_t  = torch.from_numpy(label_np).long()
-        return input_3d.float(), label_t
+        
+        # Pokud používáme Z-ADC, vytvoříme vstup s 2 kanály, jinak pouze s 1 kanálem
+        if self.use_z_adc:
+            zadc_t = torch.from_numpy(zadc_np).unsqueeze(0)
+            input_t = torch.cat([adc_t, zadc_t], dim=0)  # (2, D, H, W)
+        else:
+            input_t = adc_t  # (1, D, H, W)
+            
+        label_t = torch.from_numpy(label_np).long()
+
+        return input_t.float(), label_t
 
 
 class IndexedDatasetWrapper(Dataset):

@@ -85,7 +85,8 @@ def run_cross_validation(config):
         augment=False,
         allowed_patient_ids=config.get("allowed_patient_ids", None),
         extended_dataset=config["extended_dataset"],
-        max_aug_per_orig=config.get("max_aug_per_orig", 0)
+        max_aug_per_orig=config.get("max_aug_per_orig", 0),
+        use_z_adc=config["in_channels"] > 1
     )
     
     # Vytvoření foldů
@@ -114,7 +115,8 @@ def run_cross_validation(config):
                 label_folder=config["label_folder"],
                 augment=config["use_augmentation"],
                 extended_dataset=config["extended_dataset"],
-                max_aug_per_orig=config.get("max_aug_per_orig", 0)
+                max_aug_per_orig=config.get("max_aug_per_orig", 0),
+                use_z_adc=config["in_channels"] > 1
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
@@ -132,7 +134,8 @@ def run_cross_validation(config):
                 label_folder=config["label_folder"],
                 augment=False,
                 extended_dataset=config["extended_dataset"],
-                max_aug_per_orig=config.get("max_aug_per_orig", 0)
+                max_aug_per_orig=config.get("max_aug_per_orig", 0),
+                use_z_adc=config["in_channels"] > 1
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
@@ -145,7 +148,8 @@ def run_cross_validation(config):
                 label_folder=config["label_folder"],
                 augment=config["use_augmentation"],
                 extended_dataset=config["extended_dataset"],
-                max_aug_per_orig=config.get("max_aug_per_orig", 0)
+                max_aug_per_orig=config.get("max_aug_per_orig", 0),
+                use_z_adc=config["in_channels"] > 1
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
@@ -157,7 +161,8 @@ def run_cross_validation(config):
                 label_folder=config["label_folder"],
                 augment=False,
                 extended_dataset=config["extended_dataset"],
-                max_aug_per_orig=config.get("max_aug_per_orig", 0)
+                max_aug_per_orig=config.get("max_aug_per_orig", 0),
+                use_z_adc=config["in_channels"] > 1
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
