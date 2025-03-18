@@ -4,6 +4,7 @@ import SimpleITK as sitk
 import random
 import re
 from scipy.ndimage import rotate, gaussian_filter, distance_transform_edt, binary_erosion
+import torch
 
 def filter_augmented_files(file_list, max_aug):
     """
@@ -174,8 +175,13 @@ def prepare_preprocessed_data(
         adc_sitk = sitk.ReadImage(adc_path)
         z_sitk = sitk.ReadImage(z_path)
         label_sitk = sitk.ReadImage(label_path)
+        
+        # Uložení původních metadat (spacing, origin, direction)
+        original_spacing = adc_sitk.GetSpacing()
+        original_origin = adc_sitk.GetOrigin()
+        original_direction = adc_sitk.GetDirection()
 
-        # Normalizace spacing (volitelné)
+        # Normalizace spacing (volitelné) - provádíme jako první krok
         if allow_normalize_spacing:
             adc_sitk = normalize_spacing(adc_sitk)
             z_sitk = normalize_spacing(z_sitk)
@@ -185,7 +191,7 @@ def prepare_preprocessed_data(
         adc_np = sitk.GetArrayFromImage(adc_sitk)
         z_np = sitk.GetArrayFromImage(z_sitk)
         label_np = sitk.GetArrayFromImage(label_sitk)
-
+        
         # Oříznutí na oblast zájmu a padding na násobky 32
         bbox = compute_largest_3d_bounding_box([adc_np, z_np, label_np], threshold=0)
         adc_np, z_np, label_np = crop_to_largest_bounding_box(adc_np, z_np, label_np, bbox, margin=5)
@@ -194,10 +200,12 @@ def prepare_preprocessed_data(
         z_np = pad_3d_all_dims_to_multiple_of_32(z_np)
         label_np = pad_3d_all_dims_to_multiple_of_32(label_np)
 
-        # Normalizace intenzit (volitelné)
+        # Normalizace intenzit (volitelné) - používáme masku mozku pro lepší normalizaci
         if normalize:
-            adc_np = z_score_normalize(adc_np)
-            z_np = z_score_normalize(z_np)
+            # Vytvoření masky mozku - voxely s hodnotami > 0 v obou modalitách
+            brain_mask = (adc_np > 0) & (z_np > 0)
+            adc_np = z_score_normalize(adc_np, brain_mask)
+            z_np = z_score_normalize(z_np, brain_mask)
 
         # Převod zpět na SimpleITK obrazy
         processed_adc = sitk.GetImageFromArray(adc_np)
@@ -205,22 +213,44 @@ def prepare_preprocessed_data(
         processed_label = sitk.GetImageFromArray(label_np)
 
         # Zkopírování metadat - místo CopyInformation kopírujeme pouze relevantní metadata
-        processed_adc.SetSpacing(adc_sitk.GetSpacing())
-        processed_adc.SetOrigin(adc_sitk.GetOrigin())
-        processed_adc.SetDirection(adc_sitk.GetDirection())
-        
-        processed_z.SetSpacing(z_sitk.GetSpacing())
-        processed_z.SetOrigin(z_sitk.GetOrigin())
-        processed_z.SetDirection(z_sitk.GetDirection())
-        
-        processed_label.SetSpacing(label_sitk.GetSpacing())
-        processed_label.SetOrigin(label_sitk.GetOrigin())
-        processed_label.SetDirection(label_sitk.GetDirection())
+        if allow_normalize_spacing:
+            # Pokud jsme normalizovali spacing, použijeme nový spacing
+            processed_adc.SetSpacing(adc_sitk.GetSpacing())
+            processed_adc.SetOrigin(adc_sitk.GetOrigin())
+            processed_adc.SetDirection(adc_sitk.GetDirection())
+            
+            processed_z.SetSpacing(z_sitk.GetSpacing())
+            processed_z.SetOrigin(z_sitk.GetOrigin())
+            processed_z.SetDirection(z_sitk.GetDirection())
+            
+            processed_label.SetSpacing(label_sitk.GetSpacing())
+            processed_label.SetOrigin(label_sitk.GetOrigin())
+            processed_label.SetDirection(label_sitk.GetDirection())
+        else:
+            # Pokud jsme nenormalizovali spacing, použijeme původní metadata
+            processed_adc.SetSpacing(original_spacing)
+            processed_adc.SetOrigin(original_origin)
+            processed_adc.SetDirection(original_direction)
+            
+            processed_z.SetSpacing(original_spacing)
+            processed_z.SetOrigin(original_origin)
+            processed_z.SetDirection(original_direction)
+            
+            processed_label.SetSpacing(original_spacing)
+            processed_label.SetOrigin(original_origin)
+            processed_label.SetDirection(original_direction)
 
         # Uložení předzpracovaných souborů
         sitk.WriteImage(processed_adc, os.path.join(output_adc, adc_file))
         sitk.WriteImage(processed_z, os.path.join(output_z, z_file))
         sitk.WriteImage(processed_label, os.path.join(output_label, label_file))
+        
+        # Uvolnění paměti
+        import gc
+        del adc_np, z_np, label_np, processed_adc, processed_z, processed_label
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     print("Preprocessing complete.")
 
@@ -327,8 +357,10 @@ def normalize_spacing(image_sitk, target_spacing=(1.0, 1.0, 1.0)):
 def z_score_normalize(image_np, mask=None):
     """
     Provádí Z-score normalizaci objemu (odečtení průměru a vydělení směrodatnou odchylkou).
+    Pokud je poskytnutá maska, normalizace se provádí pouze na základě voxelů v masce.
     """
     if mask is not None:
+        # Použijeme pouze voxely označené maskou pro výpočet statistik
         values = image_np[mask > 0]
         if len(values) == 0:  # Prázdná maska
             mean_val = np.mean(image_np)
