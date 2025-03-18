@@ -261,7 +261,8 @@ def run_cross_validation(config):
                         tta_angle_max=config["tta_angle_max"],
                         training_mode=config["training_mode"],
                         patch_size=config["patch_size"],
-                        batch_size=config["batch_size"]
+                        batch_size=config["batch_size"],
+                        use_z_adc=config["in_channels"] > 1
                     )
                     
                     output_dir = os.path.join(config["output_dir"], f"fold{fold_idx+1}", f"epoch{epoch}")
@@ -379,7 +380,8 @@ def run_inference(config):
                 input_paths=[adc_path, z_path],
                 label_path=label_path,
                 device=device,
-                threshold=config["moe_threshold"]
+                threshold=config["moe_threshold"],
+                use_z_adc=config["in_channels"] > 1
             )
             
             # Výpis informací o použitém modelu
@@ -396,7 +398,8 @@ def run_inference(config):
                 tta_angle_max=config["tta_angle_max"],
                 training_mode=config["training_mode"],
                 patch_size=config["patch_size"],
-                batch_size=config["batch_size"]
+                batch_size=config["batch_size"],
+                use_z_adc=config["in_channels"] > 1
             )
         
         # Výpis metrik, pokud jsou k dispozici

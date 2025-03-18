@@ -55,7 +55,8 @@ def infer_full_volume(model,
                      tta_angle_max=3,
                      training_mode="full_volume",
                      patch_size=(64, 64, 64),
-                     batch_size=1):
+                     batch_size=1,
+                     use_z_adc=True):
     """
     Provede inferenci pro celý 3D objem.
 
@@ -69,6 +70,7 @@ def infer_full_volume(model,
         training_mode: "full_volume" nebo "patch"
         patch_size: Velikost patche pro patch-based inferenci
         batch_size: Velikost dávky pro patch-based inferenci
+        use_z_adc: Zda používat Z-ADC modalitu (druhý vstupní kanál)
 
     Returns:
         dict: Výsledky inference, včetně predikce a metrik (pokud je k dispozici ground truth)
@@ -78,10 +80,24 @@ def infer_full_volume(model,
     
     # Načtení vstupních dat
     volumes = []
-    for path in input_paths:
-        sitk_img = sitk.ReadImage(path)
-        np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
-        volumes.append(np_vol)
+    
+    # Vždy načíst ADC mapu (první v seznamu)
+    adc_path = input_paths[0]
+    sitk_img = sitk.ReadImage(adc_path)
+    np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
+    volumes.append(np_vol)
+    
+    # Načíst Z-ADC mapu, pouze pokud se používá
+    if use_z_adc and len(input_paths) > 1:
+        zadc_path = input_paths[1]
+        try:
+            sitk_zadc = sitk.ReadImage(zadc_path)
+            zadc_np = sitk.GetArrayFromImage(sitk_zadc).astype(np.float32)
+            volumes.append(zadc_np)
+        except Exception as e:
+            print(f"Varování: Nelze načíst Z-ADC soubor {zadc_path}: {e}")
+            print("Inference bude provedena pouze s ADC mapou.")
+            use_z_adc = False  # Vypnutí Z-ADC, pokud soubor nelze načíst
     
     # Vytvoření vstupního tensoru
     input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
@@ -147,7 +163,7 @@ def infer_full_volume(model,
 
 
 def infer_full_volume_moe(main_model, expert_model, input_paths, label_path=None, 
-                         device="cuda", threshold=80):
+                         device="cuda", threshold=80, use_z_adc=True):
     """
     Provede inferenci s použitím Mixture of Experts přístupu.
 
@@ -158,6 +174,7 @@ def infer_full_volume_moe(main_model, expert_model, input_paths, label_path=None
         label_path: Cesta k ground truth masce (volitelné)
         device: Zařízení pro výpočet
         threshold: Threshold pro přepnutí na expertní model
+        use_z_adc: Zda používat Z-ADC modalitu (druhý vstupní kanál)
 
     Returns:
         dict: Výsledky inference, včetně predikce a metrik
@@ -167,10 +184,24 @@ def infer_full_volume_moe(main_model, expert_model, input_paths, label_path=None
     
     # Načtení vstupních dat
     volumes = []
-    for path in input_paths:
-        sitk_img = sitk.ReadImage(path)
-        np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
-        volumes.append(np_vol)
+    
+    # Vždy načíst ADC mapu (první v seznamu)
+    adc_path = input_paths[0]
+    sitk_img = sitk.ReadImage(adc_path)
+    np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
+    volumes.append(np_vol)
+    
+    # Načíst Z-ADC mapu, pouze pokud se používá
+    if use_z_adc and len(input_paths) > 1:
+        zadc_path = input_paths[1]
+        try:
+            sitk_zadc = sitk.ReadImage(zadc_path)
+            zadc_np = sitk.GetArrayFromImage(sitk_zadc).astype(np.float32)
+            volumes.append(zadc_np)
+        except Exception as e:
+            print(f"Varování: Nelze načíst Z-ADC soubor {zadc_path}: {e}")
+            print("Inference bude provedena pouze s ADC mapou.")
+            use_z_adc = False  # Vypnutí Z-ADC, pokud soubor nelze načíst
     
     # Vytvoření vstupního tensoru
     input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
