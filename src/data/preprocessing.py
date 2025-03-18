@@ -204,10 +204,18 @@ def prepare_preprocessed_data(
         processed_z = sitk.GetImageFromArray(z_np)
         processed_label = sitk.GetImageFromArray(label_np)
 
-        # Zkopírování metadat
-        processed_adc.CopyInformation(adc_sitk)
-        processed_z.CopyInformation(z_sitk)
-        processed_label.CopyInformation(label_sitk)
+        # Zkopírování metadat - místo CopyInformation kopírujeme pouze relevantní metadata
+        processed_adc.SetSpacing(adc_sitk.GetSpacing())
+        processed_adc.SetOrigin(adc_sitk.GetOrigin())
+        processed_adc.SetDirection(adc_sitk.GetDirection())
+        
+        processed_z.SetSpacing(z_sitk.GetSpacing())
+        processed_z.SetOrigin(z_sitk.GetOrigin())
+        processed_z.SetDirection(z_sitk.GetDirection())
+        
+        processed_label.SetSpacing(label_sitk.GetSpacing())
+        processed_label.SetOrigin(label_sitk.GetOrigin())
+        processed_label.SetDirection(label_sitk.GetDirection())
 
         # Uložení předzpracovaných souborů
         sitk.WriteImage(processed_adc, os.path.join(output_adc, adc_file))
