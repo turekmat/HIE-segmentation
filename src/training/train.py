@@ -177,65 +177,73 @@ def setup_training(config, dataset_train, dataset_val, device="cuda"):
     return model, optimizer, loss_fn, scheduler, train_loader, val_loader
 
 
-def train_with_ohem(model, dataset_train, optimizer, loss_fn, device="cuda", batch_size=1):
+def train_with_ohem(model, dataset_train, optimizer, loss_fn, batch_size=1, device="cuda", ohem_ratio=0.15):
     """
-    Trénuje model s Online Hard Example Mining.
+    Trénuje model pomocí Online Hard Example Mining (OHEM).
+    OHEM vybírá patche, které jsou pro model nejtěžší (mají nejvyšší ztrátu).
     
     Args:
         model: Model k trénování
-        dataset_train: Trénovací dataset
+        dataset_train: Dataset s trénovacími daty
         optimizer: Optimalizátor
         loss_fn: Ztrátová funkce
-        device: Zařízení pro výpočet
         batch_size: Velikost dávky
+        device: Zařízení pro výpočet
+        ohem_ratio: Poměr těžkých příkladů k vybranému počtu (např. 0.15 = 15% nejtěžších patchů)
         
     Returns:
-        float: Průměrná ztráta
+        float: Průměrná ztráta za epochu
     """
-    model.eval()
-    dice_list = []
-    train_loader_no_shuffle = DataLoader(dataset_train, batch_size=1, shuffle=False)
+    model.train()
+    weighted_subset_size = min(int(len(dataset_train) * ohem_ratio), batch_size * 100)  # Omezení počtu vzorků
+    loss_per_sample = []
+    indices = []
     
-    # Získat Dice skóre pro všechny trénovací vzorky
-    with torch.no_grad():
-        for i, (inputs, labels) in enumerate(train_loader_no_shuffle):
-            inputs, labels = inputs.to(device), labels.to(device)
+    # Získáme ztrátu pro každý vzorek
+    for idx in range(min(len(dataset_train), 5000)):  # Omezení na 5000 vzorků pro rychlost
+        inputs, labels = dataset_train[idx]
+        inputs, labels = inputs.unsqueeze(0).to(device), labels.unsqueeze(0).to(device)
+        
+        with torch.no_grad():
             logits = model(inputs)
-            pred = torch.argmax(logits, dim=1)
-            pred_np = pred.cpu().numpy()[0]
-            labels_np = labels.cpu().numpy()[0]
-            dice = dice_coefficient(pred_np, labels_np)
-            dice_list.append((dice, i))
+            loss = loss_fn(logits, labels)
+            loss_per_sample.append(loss.item())
+            indices.append(idx)
     
-    # Vypočítat váhy pro každý vzorek
-    weights = [1.0 - dice for dice, _ in dice_list]
+    # Seřadíme vzorky podle ztráty (sestupně) a vybereme nejhorší
+    sorted_indices = [indices[i] for i in np.argsort(loss_per_sample)[::-1]]
+    hard_indices = sorted_indices[:weighted_subset_size]
     
-    # Normalizovat váhy na rozsah [0.5, 1.5]
-    min_w = min(weights)
-    max_w = max(weights)
+    # Vytvoříme Subset datasetu s těžkými vzorky
+    from torch.utils.data import Subset, DataLoader
+    hard_subset = Subset(dataset_train, hard_indices)
+    weighted_train_loader = DataLoader(hard_subset, batch_size=batch_size, shuffle=True)
     
-    if max_w != min_w:  # Zamezení dělení nulou
-        normalized_weights = [(w - min_w)/(max_w - min_w) + 0.5 for w in weights]
-    else:
-        normalized_weights = [1.0] * len(weights)
+    # Trénování na těžkých patchech
+    running_loss = 0.0
+    batch_count = 0
     
-    # Vytvořit vážený sampler
-    sampler = WeightedRandomSampler(
-        weights=normalized_weights,
-        num_samples=len(dataset_train),
-        replacement=True
-    )
+    # Nastavíme model do trénovacího módu
+    model.train()
     
-    # Vytvořit nový DataLoader se samplerem
-    weighted_train_loader = DataLoader(
-        dataset_train,
-        batch_size=batch_size,
-        sampler=sampler,
-        drop_last=True
-    )
+    # Trénování na těžkých vzorcích s gradient accumulation pro stabilitu
+    for inputs, labels in weighted_train_loader:
+        inputs, labels = inputs.to(device), labels.to(device)
+        
+        # Forward pass
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = loss_fn(outputs, labels)
+        
+        # Backward pass
+        loss.backward()
+        optimizer.step()
+        
+        running_loss += loss.item()
+        batch_count += 1
     
-    # Trénovat model s vážením
-    return train_one_epoch(model, weighted_train_loader, optimizer, loss_fn, device=device)
+    # Vrátíme průměrnou ztrátu
+    return running_loss / max(1, batch_count)
 
 
 def create_cv_folds(dataset, n_folds, extended_dataset=False):

@@ -149,13 +149,23 @@ class BONBID3DPatchDataset(Dataset):
         input_np = input_vol.numpy()  # tvar (C, D, H, W)
         label_np = label_vol.numpy()  # tvar (D, H, W)
 
-        _, D, H, W = input_np.shape
+        C, D, H, W = input_np.shape
         pD, pH, pW = self.patch_size
 
-        # Zajistíme, že patch_size nepřesahuje velikost objemu
-        pD = min(pD, D)
-        pH = min(pH, H)
-        pW = min(pW, W)
+        # Vytvoříme paddovaný tensor, pokud objem je menší než požadovaná velikost patche
+        if D < pD or H < pH or W < pW:
+            # Vytvoříme paddovaný array pro vstup
+            padded_input = np.zeros((C, max(D, pD), max(H, pH), max(W, pW)), dtype=input_np.dtype)
+            padded_input[:, :D, :H, :W] = input_np
+            input_np = padded_input
+            
+            # Vytvoříme paddovaný array pro label
+            padded_label = np.zeros((max(D, pD), max(H, pH), max(W, pW)), dtype=label_np.dtype)
+            padded_label[:D, :H, :W] = label_np
+            label_np = padded_label
+            
+            # Aktualizujeme rozměry
+            _, D, H, W = input_np.shape
 
         # Určíme náhodný počáteční bod (kontrolujeme, aby patch pasoval)
         d0 = random.randint(0, max(0, D - pD))
@@ -165,18 +175,34 @@ class BONBID3DPatchDataset(Dataset):
         # Ořízneme patch z každého kanálu a labelu
         patch_input = input_np[:, d0:d0+pD, h0:h0+pH, w0:w0+pW]
         patch_label = label_np[d0:d0+pD, h0:h0+pH, w0:w0+pW]
+        
+        # Zajistíme, že patch má přesně požadovanou velikost (pro případ, že by padding nepracoval správně)
+        if patch_input.shape[1:] != (pD, pH, pW):
+            temp_input = np.zeros((C, pD, pH, pW), dtype=patch_input.dtype)
+            temp_input[:, :min(pD, patch_input.shape[1]), :min(pH, patch_input.shape[2]), :min(pW, patch_input.shape[3])] = \
+                patch_input[:, :min(pD, patch_input.shape[1]), :min(pH, patch_input.shape[2]), :min(pW, patch_input.shape[3])]
+            patch_input = temp_input
+            
+            temp_label = np.zeros((pD, pH, pW), dtype=patch_label.dtype)
+            temp_label[:min(pD, patch_label.shape[0]), :min(pH, patch_label.shape[1]), :min(pW, patch_label.shape[2])] = \
+                patch_label[:min(pD, patch_label.shape[0]), :min(pH, patch_label.shape[1]), :min(pW, patch_label.shape[2])]
+            patch_label = temp_label
 
         # Pokud chcete augmentaci na patchi, použijte ji zde.
         if self.augment:
             # Uvažujeme, že první kanál je ADC a druhý je Z_ADC – zavoláme tedy existující funkci
             adc_patch = patch_input[0]
-            zadc_patch = patch_input[1]
+            zadc_patch = patch_input[1] if C > 1 else np.zeros_like(adc_patch)
             adc_patch, zadc_patch, patch_label = random_3d_augmentation(adc_patch, zadc_patch, patch_label)
-            patch_input = np.stack([adc_patch, zadc_patch], axis=0)
+            patch_input = np.stack([adc_patch, zadc_patch], axis=0) if C > 1 else np.expand_dims(adc_patch, axis=0)
 
         # Převedeme zpět na Torch tensory
         patch_input = torch.from_numpy(patch_input).float()
         patch_label = torch.from_numpy(patch_label).long()
+        
+        # Konečná kontrola tvaru
+        assert patch_input.shape[1:] == (pD, pH, pW), f"Nesprávná velikost patch_input: {patch_input.shape}, očekáváno (C, {pD}, {pH}, {pW})"
+        assert patch_label.shape == (pD, pH, pW), f"Nesprávná velikost patch_label: {patch_label.shape}, očekáváno ({pD}, {pH}, {pW})"
 
         return patch_input, patch_label
 

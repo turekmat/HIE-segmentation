@@ -215,8 +215,9 @@ def run_cross_validation(config):
                     dataset_train=train_dataset,
                     optimizer=optimizer,
                     loss_fn=loss_fn,
+                    batch_size=config["batch_size"],
                     device=device,
-                    batch_size=config["batch_size"]
+                    ohem_ratio=config.get("ohem_ratio", 0.15)
                 )
             else:
                 train_loss = train_one_epoch(
