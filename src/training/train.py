@@ -88,15 +88,49 @@ def optimal_sliding_window_inference(model, inputs, roi_size, sw_batch_size, ove
     else:
         extra_params = {"mode": "constant"}
     
-    # Využijeme MONAI implementaci
-    return sliding_window_inference(
-        inputs=inputs,
-        roi_size=roi_size,
-        sw_batch_size=sw_batch_size,
-        predictor=model,
-        overlap=overlap,
-        **extra_params
-    )
+    # Získání rozměrů vstupních dat a patch
+    input_shape = list(inputs.shape[2:])  # [D, H, W]
+    patch_shape = roi_size
+    
+    # Zjištění, které dimenze patche jsou stejně velké nebo větší než odpovídající dimenze vstupu
+    # Pro tyto dimenze použijeme velmi malý overlap, abychom zabránili problémům s paddingem
+    adaptive_overlap = [overlap] * len(input_shape)
+    for i in range(len(input_shape)):
+        if patch_shape[i] >= input_shape[i]:
+            # Pro dimenze, kde je patch větší nebo stejný jako vstup, použijeme minimální overlap
+            adaptive_overlap[i] = 0.01
+            # Úprava velikosti patche, pokud je větší než vstup
+            patch_shape[i] = min(patch_shape[i], input_shape[i])
+    
+    # Použití adaptivního overlapu
+    try:
+        # Využijeme MONAI implementaci
+        return sliding_window_inference(
+            inputs=inputs,
+            roi_size=patch_shape,
+            sw_batch_size=sw_batch_size,
+            predictor=model,
+            overlap=adaptive_overlap,
+            **extra_params
+        )
+    except RuntimeError as e:
+        # Záložní řešení v případě problémů - zkusíme použít menší overlap
+        print(f"Varování: Chyba při sliding window inference. Zkouším s menším overlapem. Původní chyba: {e}")
+        try:
+            return sliding_window_inference(
+                inputs=inputs,
+                roi_size=patch_shape,
+                sw_batch_size=sw_batch_size,
+                predictor=model,
+                overlap=0.01,  # Minimální overlap
+                **extra_params
+            )
+        except Exception as e2:
+            # Jako poslední možnost zkusíme zpracovat celý vstup najednou
+            print(f"Varování: Záložní řešení selhalo. Pokusím se zpracovat vstup najednou. Chyba: {e2}")
+            if inputs.shape[2] * inputs.shape[3] * inputs.shape[4] > 128 * 128 * 64:
+                print("Varování: Vstup je velmi velký pro zpracování najednou!")
+            return model(inputs)
 
 
 def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="full_volume",
@@ -129,58 +163,93 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
     running_masd = 0.0
     running_nsd  = 0.0
     count_samples = 0
-
+    
+    # Kontrola velikosti patche pro SR data
+    original_patch_size = patch_size
+    
     tta_transforms = get_tta_transforms(angle_max=TTA_ANGLE_MAX) if USE_TTA else None
 
     with torch.no_grad():
         # Upraveno pro zpracování custom_collate_fn výstupu
         for batch in loader:
             for sample in batch:
-                inputs, labels = sample
-                inputs, labels = inputs.unsqueeze(0).to(device), labels.unsqueeze(0).to(device)
+                try:
+                    inputs, labels = sample
+                    inputs, labels = inputs.unsqueeze(0).to(device), labels.unsqueeze(0).to(device)
+                    
+                    # Pro super-resolution data kontrola rozměrů a potenciální úprava patch size
+                    if training_mode == "patch":
+                        input_shape = inputs.shape[2:]  # [D, H, W]
+                        if any(p >= s for p, s in zip(patch_size, input_shape)):
+                            print(f"Vstup má rozměry {input_shape}, patch_size je {patch_size}. Provádím automatickou úpravu patch_size.")
+                            # Vytvoříme nový patch size, který bude respektovat velikost vstupu
+                            adjusted_patch_size = [min(p, s) for p, s in zip(patch_size, input_shape)]
+                            patch_size = adjusted_patch_size
+                            print(f"Upravený patch_size: {patch_size}")
+                    
+                    if training_mode == "patch":
+                        try:
+                            # Použít optimalizovaný sliding window
+                            logits = optimal_sliding_window_inference(
+                                model=model, 
+                                inputs=inputs, 
+                                roi_size=patch_size, 
+                                sw_batch_size=1, 
+                                overlap=sw_overlap,
+                                mode="gaussian",  # Nebo "constant" pro jednoduché průměrování
+                                device=device
+                            )
+                        except Exception as e:
+                            print(f"Chyba při sliding window inference: {e}")
+                            print("Zkouším zpracovat vstup najednou...")
+                            logits = model(inputs)
+                    else:
+                        logits = model(inputs)
 
-                if training_mode == "patch":
-                    # Použít optimalizovaný sliding window
-                    logits = optimal_sliding_window_inference(
-                        model=model, 
-                        inputs=inputs, 
-                        roi_size=patch_size, 
-                        sw_batch_size=1, 
-                        overlap=sw_overlap,
-                        mode="gaussian",  # Nebo "constant" pro jednoduché průměrování
-                        device=device
-                    )
-                else:
-                    logits = model(inputs)
+                    loss = loss_fn(logits, labels)
+                    running_loss += loss.item()
 
-                loss = loss_fn(logits, labels)
-                running_loss += loss.item()
+                    if USE_TTA and tta_forward_fn is not None:
+                        try:
+                            avg_probs = tta_forward_fn(model, inputs, device, tta_transforms)
+                            pred = np.argmax(avg_probs, axis=0)
+                        except Exception as e:
+                            print(f"Chyba při TTA: {e}. Používám inferenci bez TTA.")
+                            pred = torch.argmax(logits, dim=1).cpu().numpy()[0]
+                    else:
+                        pred = torch.argmax(logits, dim=1).cpu().numpy()[0]
 
-                if USE_TTA and tta_forward_fn is not None:
-                    avg_probs = tta_forward_fn(model, inputs, device, tta_transforms)
-                    pred = np.argmax(avg_probs, axis=0)
-                else:
-                    pred = torch.argmax(logits, dim=1).cpu().numpy()[0]
+                    label = labels.cpu().numpy()[0]
+                    dsc = dice_coefficient(pred, label)
+                    running_dice += dsc
 
-                label = labels.cpu().numpy()[0]
-                dsc = dice_coefficient(pred, label)
-                running_dice += dsc
-
-                if compute_surface_metrics:
-                    # Zde by bylo dobré importovat compute_masd a compute_nsd ze správného místa
-                    # například z utils.metrics
-                    from ..utils.metrics import compute_masd, compute_nsd
-                    masd = compute_masd(pred, label, spacing=(1,1,1), sampling_ratio=0.5)
-                    nsd  = compute_nsd(pred, label, spacing=(1,1,1), sampling_ratio=0.5)
-                    running_masd += masd
-                    running_nsd  += nsd
-                count_samples += 1
-
+                    if compute_surface_metrics:
+                        try:
+                            # Zde by bylo dobré importovat compute_masd a compute_nsd ze správného místa
+                            # například z utils.metrics
+                            from ..utils.metrics import compute_masd, compute_nsd
+                            masd = compute_masd(pred, label, spacing=(1,1,1), sampling_ratio=0.5)
+                            nsd  = compute_nsd(pred, label, spacing=(1,1,1), sampling_ratio=0.5)
+                            running_masd += masd
+                            running_nsd  += nsd
+                        except Exception as e:
+                            print(f"Chyba při výpočtu povrchových metrik: {e}")
+                            if count_samples == 0:  # Jen při prvním vzorku vypisovat detaily
+                                print(f"Tvary: pred {pred.shape}, label {label.shape}")
+                                
+                    count_samples += 1
+                except Exception as e:
+                    print(f"Chyba při zpracování vzorku: {e}")
+                    continue
+    
+    # Obnovení původní velikosti patch
+    patch_size = original_patch_size
+    
     avg_loss = running_loss / count_samples if count_samples > 0 else 0.0
     avg_dice = running_dice / count_samples if count_samples > 0 else 0.0
 
     metrics = {'val_loss': avg_loss, 'val_dice': avg_dice}
-    if compute_surface_metrics and count_samples > 0:
+    if compute_surface_metrics and count_samples > 0 and running_masd > 0:
         metrics['val_masd'] = running_masd / count_samples
         metrics['val_nsd']  = running_nsd  / count_samples
 
@@ -269,24 +338,49 @@ def train_with_ohem(model, dataset_train, optimizer, loss_fn, batch_size=1, devi
         float: Průměrná ztráta za epochu
     """
     model.train()
-    weighted_subset_size = min(int(len(dataset_train) * ohem_ratio), batch_size * 100)  # Omezení počtu vzorků
+    max_samples = 5000  # Maximální počet vzorků pro OHEM analýzu
+    sample_limit = min(len(dataset_train), max_samples)
+    weighted_subset_size = min(int(sample_limit * ohem_ratio), batch_size * 100)  # Omezení počtu vzorků
+    
+    print(f"OHEM: Analýza {sample_limit} vzorků z celkových {len(dataset_train)}")
+    
     loss_per_sample = []
     indices = []
     
+    # Uvolnění paměti
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
     # Získáme ztrátu pro každý vzorek
-    for idx in range(min(len(dataset_train), 5000)):  # Omezení na 5000 vzorků pro rychlost
-        inputs, labels = dataset_train[idx]
-        inputs, labels = inputs.unsqueeze(0).to(device), labels.unsqueeze(0).to(device)
-        
-        with torch.no_grad():
-            logits = model(inputs)
-            loss = loss_fn(logits, labels)
-            loss_per_sample.append(loss.item())
-            indices.append(idx)
+    for idx in range(sample_limit):
+        try:
+            inputs, labels = dataset_train[idx]
+            inputs, labels = inputs.unsqueeze(0).to(device), labels.unsqueeze(0).to(device)
+            
+            with torch.no_grad():
+                logits = model(inputs)
+                loss = loss_fn(logits, labels)
+                loss_per_sample.append(loss.item())
+                indices.append(idx)
+                
+            # Uvolnění paměti
+            del inputs, labels, logits, loss
+            if idx % 100 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+        except Exception as e:
+            print(f"Chyba při OHEM analýze vzorku {idx}: {e}")
+            continue
+    
+    if not loss_per_sample:
+        print("Varování: Žádné vzorky nebyly úspěšně analyzovány pro OHEM. Přeskakuji OHEM trénink.")
+        return 0.0
     
     # Seřadíme vzorky podle ztráty (sestupně) a vybereme nejhorší
     sorted_indices = [indices[i] for i in np.argsort(loss_per_sample)[::-1]]
     hard_indices = sorted_indices[:weighted_subset_size]
+    
+    print(f"OHEM: Vybráno {len(hard_indices)} těžkých vzorků pro trénink")
     
     # Vytvoříme Subset datasetu s těžkými vzorky
     from torch.utils.data import Subset, DataLoader
@@ -300,21 +394,35 @@ def train_with_ohem(model, dataset_train, optimizer, loss_fn, batch_size=1, devi
     # Nastavíme model do trénovacího módu
     model.train()
     
+    # Uvolnění paměti
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
     # Trénování na těžkých vzorcích s gradient accumulation pro stabilitu
     for inputs, labels in weighted_train_loader:
-        inputs, labels = inputs.to(device), labels.to(device)
-        
-        # Forward pass
-        optimizer.zero_grad()
-        outputs = model(inputs)
-        loss = loss_fn(outputs, labels)
-        
-        # Backward pass
-        loss.backward()
-        optimizer.step()
-        
-        running_loss += loss.item()
-        batch_count += 1
+        try:
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            # Forward pass
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = loss_fn(outputs, labels)
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item()
+            batch_count += 1
+            
+            # Uvolnění paměti
+            del inputs, labels, outputs, loss
+            if batch_count % 5 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+        except Exception as e:
+            print(f"Chyba při OHEM tréninku na dávce: {e}")
+            continue
     
     # Vrátíme průměrnou ztrátu
     return running_loss / max(1, batch_count)

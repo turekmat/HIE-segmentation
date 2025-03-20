@@ -53,6 +53,64 @@ def set_seed(seed):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+
+def get_optimal_patch_size(dataset, requested_patch_size, min_dim_size=16):
+    """
+    Určí optimální velikost patche na základě rozměrů dat v datasetu.
+    
+    Args:
+        dataset: Dataset, ze kterého budeme zjišťovat rozměry
+        requested_patch_size: Požadovaná velikost patche [D, H, W]
+        min_dim_size: Minimální velikost pro jednu dimenzi
+        
+    Returns:
+        tuple: Optimální velikost patche [D, H, W]
+    """
+    if not dataset or len(dataset) == 0:
+        print("Varování: Prázdný dataset, nemohu určit optimální velikost patche.")
+        return requested_patch_size
+    
+    try:
+        # Získat první vzorek z datasetu
+        sample_data, _ = dataset[0]
+        
+        # Zjistit shape - předpokládáme [C, D, H, W]
+        input_shape = sample_data.shape[1:]  # [D, H, W]
+        
+        print(f"Rozměry vstupních dat: {input_shape}")
+        print(f"Požadovaná velikost patche: {requested_patch_size}")
+        
+        # Kontrola, jestli patch size není větší než vstupní dimensions
+        optimal_patch = list(requested_patch_size)
+        need_adjustment = False
+        
+        for i in range(len(input_shape)):
+            if optimal_patch[i] > input_shape[i]:
+                optimal_patch[i] = max(min_dim_size, input_shape[i])
+                need_adjustment = True
+        
+        if need_adjustment:
+            print(f"Upravená velikost patche: {optimal_patch}")
+        
+        # Zkontrolovat, zda je velikost patche dělitelná 16 (pro SwinUNETR)
+        for i in range(len(optimal_patch)):
+            if optimal_patch[i] % 16 != 0:
+                # Zaokrouhlit dolů na nejbližší násobek 16
+                optimal_patch[i] = (optimal_patch[i] // 16) * 16
+                if optimal_patch[i] < min_dim_size:
+                    optimal_patch[i] = min_dim_size
+        
+        # Další kontrola po úpravách
+        if optimal_patch != list(requested_patch_size):
+            print(f"Finální velikost patche po úpravě na násobky 16: {optimal_patch}")
+        
+        return tuple(optimal_patch)
+    
+    except Exception as e:
+        print(f"Chyba při určování optimální velikosti patche: {e}")
+        return requested_patch_size
+
+
 def run_cross_validation(config):
     """
     Spustí k-fold cross-validaci.
@@ -118,6 +176,22 @@ def run_cross_validation(config):
         use_z_adc=config["in_channels"] > 1
     )
     
+    # Zjištění optimální velikosti patche
+    if config["training_mode"] == "patch":
+        sample_dataset = full_dataset
+        if len(sample_dataset) > 0:
+            original_patch_size = config["patch_size"]
+            optimal_patch_size = get_optimal_patch_size(sample_dataset, original_patch_size)
+            
+            # Aktualizace konfigurace s optimální velikostí patche
+            if optimal_patch_size != original_patch_size:
+                print(f"Původní patch_size {original_patch_size} byl upraven na {optimal_patch_size} pro super-resolution data.")
+                config["patch_size"] = optimal_patch_size
+                
+                # Pokud používáme wandb, aktualizujeme konfiguraci
+                if config["use_wandb"]:
+                    wandb.config.update({"patch_size": optimal_patch_size}, allow_val_change=True)
+    
     # Vytvoření foldů
     print(f"Vytváření {config['n_folds']}-fold cross-validace...")
     folds = create_cv_folds(
@@ -128,6 +202,21 @@ def run_cross_validation(config):
     
     # Určení device
     device = torch.device(config["device"])
+    
+    # Optimalizace GPU paměti
+    if torch.cuda.is_available():
+        print("Optimalizace využití GPU paměti...")
+        torch.cuda.empty_cache()
+
+        # Pokud je k dispozici dostatek GPU, můžeme nastavit specifické optimalizace
+        if torch.cuda.device_count() > 0:
+            torch.backends.cudnn.benchmark = True  # Může zrychlit trénink
+            
+        # Výpis dostupné paměti GPU
+        for i in range(torch.cuda.device_count()):
+            free_memory = torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)
+            free_memory_gb = free_memory / (1024 ** 3)
+            print(f"GPU {i}: Volná paměť {free_memory_gb:.2f} GB")
     
     # Cykly přes všechny foldy
     all_fold_metrics = []
