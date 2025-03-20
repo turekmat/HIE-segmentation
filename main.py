@@ -300,7 +300,7 @@ def run_cross_validation(config):
                     )
                     
                     output_dir = os.path.join(config["output_dir"], f"fold{fold_idx+1}", f"epoch{epoch}")
-                    save_segmentation_with_metrics(result, output_dir, prefix="sample")
+                    save_segmentation_with_metrics(result, output_dir, prefix="sample", save_pdf_comparison=True)
         
         # Ukládání metrik pro fold
         all_fold_metrics.append(fold_metrics)
@@ -475,7 +475,7 @@ def run_inference(config):
         
         # Uložení výsledků
         output_dir = config["output_dir"]
-        save_segmentation_with_metrics(result, output_dir)
+        save_segmentation_with_metrics(result, output_dir, save_pdf_comparison=config["save_pdf_comparison"])
     
     print(f"\nInference dokončena. Výsledky jsou uloženy v: {config['output_dir']}")
 
@@ -540,6 +540,8 @@ def main():
     parser.add_argument("--no_tta", action="store_false", dest="use_tta",
                         help="Vypnout Test-Time Augmentation při inferenci")
     parser.add_argument("--moe_threshold", type=int, help="Threshold pro přepnutí na expertní model")
+    parser.add_argument("--save_pdf_comparison", action="store_true",
+                        help="Vytvořit PDF s porovnáním ground truth a predikce (jen když je dostupný label)")
     
     # Obecné argumenty
     parser.add_argument("--seed", type=int, help="Seed pro reprodukovatelnost")

@@ -3,6 +3,9 @@ import torch
 import numpy as np
 import SimpleITK as sitk
 from monai.inferers import sliding_window_inference
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+import math
 
 from ..utils.metrics import dice_coefficient, compute_masd, compute_nsd
 from ..data.preprocessing import get_tta_transforms, apply_tta_transform, invert_tta_transform
@@ -281,7 +284,116 @@ def save_segmentation_to_file(prediction, reference_sitk, output_path):
     print(f"Segmentace uložena do: {output_path}")
 
 
-def save_segmentation_with_metrics(result, output_dir, prefix="segmentation"):
+def save_slice_comparison_pdf(result, output_dir, prefix="comparison"):
+    """
+    Vytvoří PDF soubor s porovnáním všech řezů ground truth a predikce modelu.
+    PDF bude obsahovat dva sloupce - v jednom sloupci ground truth a v druhém predikce.
+    
+    Args:
+        result: Výsledek z infer_full_volume nebo infer_full_volume_moe
+        output_dir: Výstupní adresář
+        prefix: Prefix pro název souboru
+        
+    Returns:
+        str: Cesta k vytvořenému PDF souboru
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    prediction = result['prediction']  # shape (D, H, W)
+    reference = result['reference']    # shape (D, H, W)
+    
+    if reference is None:
+        print("Ground truth reference není k dispozici, nelze vytvořit PDF porovnání.")
+        return None
+    
+    # Získání metadat pro název souboru
+    metrics = result.get('metrics', {})
+    dice = metrics.get('dice', 0.0)
+    patient_id = result.get('patient_id', 'unknown')
+    
+    # Vytvoření cesty k souboru
+    output_name = f"{prefix}_{patient_id}_dice{dice:.3f}.pdf"
+    output_path = os.path.join(output_dir, output_name)
+    
+    # Zjištění počtu řezů a definice barev pro vizualizaci
+    num_slices = reference.shape[0]
+    rows_per_page = 6  # Počet řezů na stránku
+    
+    # Definice barevných map pro segmentace (pozadí průhledné, léze červená)
+    gt_cmap = plt.cm.colors.ListedColormap(['none', 'red'])
+    pred_cmap = plt.cm.colors.ListedColormap(['none', 'blue'])
+    
+    # Načtení vstupního obrazu pro podklad, pokud je k dispozici
+    background_vol = None
+    input_path = result['input_paths'][0]
+    if os.path.exists(input_path):
+        try:
+            adc_sitk = sitk.ReadImage(input_path)
+            background_vol = sitk.GetArrayFromImage(adc_sitk)
+            # Normalizace pro zobrazení
+            background_vol = (background_vol - background_vol.min()) / (background_vol.max() - background_vol.min() + 1e-8)
+        except Exception as e:
+            print(f"Nelze načíst pozadí z ADC: {e}")
+            background_vol = None
+    
+    # Vytvoření PDF s více řezy na stránku
+    with PdfPages(output_path) as pdf:
+        num_pages = math.ceil(num_slices / rows_per_page)
+        
+        for page in range(num_pages):
+            start_idx = page * rows_per_page
+            end_idx = min(start_idx + rows_per_page, num_slices)
+            slices_on_page = end_idx - start_idx
+            
+            # Vytvoření mřížky pro aktuální stránku
+            fig, axes = plt.subplots(slices_on_page, 2, figsize=(10, 2 * slices_on_page))
+            
+            # Zajištění, že axes je vždy 2D pole, i když je jen jeden řez
+            if slices_on_page == 1:
+                axes = np.array([axes])
+            
+            # Projděme řezy pro aktuální stránku
+            for i in range(slices_on_page):
+                slice_idx = start_idx + i
+                row = i
+                
+                # Referenční řez (Ground Truth)
+                if background_vol is not None:
+                    # Zobrazit ADC v pozadí a segmentaci přes něj
+                    bg_slice = background_vol[slice_idx, :, :]
+                    axes[row, 0].imshow(bg_slice, cmap='gray')
+                    axes[row, 0].imshow(reference[slice_idx, :, :], cmap=gt_cmap, alpha=0.7)
+                else:
+                    # Zobrazit jen segmentaci
+                    axes[row, 0].imshow(reference[slice_idx, :, :], cmap='gray')
+                
+                axes[row, 0].set_title(f'Ground Truth (řez {slice_idx+1})')
+                axes[row, 0].axis('off')
+                
+                # Predikovaný řez (Prediction)
+                if background_vol is not None:
+                    # Zobrazit ADC v pozadí a segmentaci přes něj
+                    bg_slice = background_vol[slice_idx, :, :]
+                    axes[row, 1].imshow(bg_slice, cmap='gray')
+                    axes[row, 1].imshow(prediction[slice_idx, :, :], cmap=pred_cmap, alpha=0.7)
+                else:
+                    # Zobrazit jen segmentaci
+                    axes[row, 1].imshow(prediction[slice_idx, :, :], cmap='gray')
+                
+                axes[row, 1].set_title(f'Predikce (řez {slice_idx+1})')
+                axes[row, 1].axis('off')
+            
+            # Přidáme hlavní titulek na stránku
+            plt.suptitle(f'Porovnání segmentace - pacient {patient_id}, Dice koeficient: {dice:.3f}', fontsize=14)
+            plt.tight_layout(rect=[0, 0, 1, 0.97])  # Rezervujeme místo pro hlavní titulek
+            pdf.savefig(fig)
+            plt.close(fig)
+    
+    print(f"PDF s porovnáním všech řezů uloženo do: {output_path}")
+    return output_path
+
+
+def save_segmentation_with_metrics(result, output_dir, prefix="segmentation", save_pdf_comparison=False):
     """
     Uloží segmentaci a přidá hodnoty metrik do názvu souboru.
 
@@ -289,6 +401,7 @@ def save_segmentation_with_metrics(result, output_dir, prefix="segmentation"):
         result: Výsledek z infer_full_volume nebo infer_full_volume_moe
         output_dir: Výstupní adresář
         prefix: Prefix pro název souboru
+        save_pdf_comparison: Zda vytvořit PDF s porovnáním řezů
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -306,4 +419,9 @@ def save_segmentation_with_metrics(result, output_dir, prefix="segmentation"):
     output_path = os.path.join(output_dir, output_name)
     
     save_segmentation_to_file(prediction, ref_sitk, output_path)
+    
+    # Pokud je požadováno, vytvoříme PDF s porovnáním
+    if save_pdf_comparison and result.get('reference') is not None:
+        save_slice_comparison_pdf(result, output_dir, prefix=f"{prefix}_comparison")
+    
     return output_path 

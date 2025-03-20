@@ -63,6 +63,7 @@ def get_default_config() -> Dict[str, Any]:
         "use_tta": True,                    # Zda používat Test-Time Augmentation
         "tta_angle_max": 3,                 # Maximální úhel pro TTA rotace
         "moe_threshold": 80,                # Threshold pro přepnutí na expertní model
+        "save_pdf_comparison": True,       # Zda vytvářet PDF s porovnáním ground truth a predikce
         
         # Wandb parametry
         "use_wandb": False,                 # Zda používat Weights & Biases
