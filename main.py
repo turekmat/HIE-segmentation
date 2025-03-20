@@ -154,7 +154,10 @@ def run_cross_validation(config):
             train_dataset = BONBID3DPatchDataset(
                 full_volume_dataset=train_dataset_full,
                 patch_size=config["patch_size"],
-                patches_per_volume=config["patches_per_volume"]
+                patches_per_volume=config["patches_per_volume"],
+                augment=config["use_augmentation"],
+                intelligent_sampling=config.get("intelligent_sampling", True),
+                foreground_ratio=config.get("foreground_ratio", 0.7)
             )
             
             val_dataset_full = BONBID3DFullVolumeDataset(
@@ -239,7 +242,8 @@ def run_cross_validation(config):
                 USE_TTA=config["use_tta"],
                 TTA_ANGLE_MAX=config["tta_angle_max"],
                 batch_size=config["batch_size"],
-                patch_size=config["patch_size"]
+                patch_size=config["patch_size"],
+                sw_overlap=config.get("sw_overlap", 0.5)
             )
             
             # Aktualizace learning rate
@@ -524,6 +528,11 @@ def main():
     parser.add_argument("--patches_per_volume", type=int, help="Počet patchů na objem při patch-based trénování")
     parser.add_argument("--patch_size", type=int, nargs=3, help="Velikost patche (3 hodnoty: výška, šířka, hloubka)")
     parser.add_argument("--inference_every_n_epochs", type=int, default=0, help="Provést inferenci každých N epoch (0 = vypnuto)")
+    
+    # Přidané argumenty pro patch-based training
+    parser.add_argument("--intelligent_sampling", action="store_true", help="Povolit inteligentní vzorkování patchů zaměřené na léze")
+    parser.add_argument("--foreground_ratio", type=float, default=0.7, help="Poměr patchů, které by měly obsahovat léze (0-1)")
+    parser.add_argument("--sw_overlap", type=float, default=0.5, help="Míra překrytí pro sliding window inference (0-1)")
     
     # Argumenty inference
     parser.add_argument("--inference_mode", type=str, choices=["standard", "moe"], default="standard", 

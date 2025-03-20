@@ -128,14 +128,20 @@ class BONBID3DPatchDataset(Dataset):
         patch_size (tuple): Velikost patche, např. (64,64,64).
         patches_per_volume (int): Kolik patchí se bude extrahovat z každého objemu.
         augment (bool): Použít nebo ne data augmentaci na jednotlivých patchech.
+        intelligent_sampling (bool): Použít inteligentní vzorkování zaměřené na oblasti s lézemi.
+        foreground_ratio (float): Poměr patchů, které by měly obsahovat popředí (léze).
     """
-    def __init__(self, full_volume_dataset, patch_size=(64,64,64), patches_per_volume=10, augment=False):
+    def __init__(self, full_volume_dataset, patch_size=(64,64,64), patches_per_volume=10, 
+                 augment=False, intelligent_sampling=True, foreground_ratio=0.7):
         super().__init__()
         self.full_volume_dataset = full_volume_dataset
         self.patch_size = patch_size
         self.patches_per_volume = patches_per_volume
         self.augment = augment
         self.num_volumes = len(full_volume_dataset)
+        self.intelligent_sampling = intelligent_sampling
+        self.foreground_ratio = foreground_ratio
+        self.label_centers = {}  # Cache pro středy lézí
 
     def __len__(self):
         return self.num_volumes * self.patches_per_volume
@@ -167,10 +173,48 @@ class BONBID3DPatchDataset(Dataset):
             # Aktualizujeme rozměry
             _, D, H, W = input_np.shape
 
-        # Určíme náhodný počáteční bod (kontrolujeme, aby patch pasoval)
-        d0 = random.randint(0, max(0, D - pD))
-        h0 = random.randint(0, max(0, H - pH))
-        w0 = random.randint(0, max(0, W - pW))
+        # Inteligentní vzorkování - zaměřujeme se na oblasti s lézemi
+        if self.intelligent_sampling and np.random.random() < self.foreground_ratio:
+            # Použít cache pokud máme již spočítané středy lézí pro tento objem
+            if volume_idx in self.label_centers:
+                foreground_centers = self.label_centers[volume_idx]
+            else:
+                # Najdeme indexy voxelů, které obsahují léze (hodnoty > 0)
+                foreground_indices = np.where(label_np > 0)
+                if len(foreground_indices[0]) > 0:
+                    # Náhodně vybereme jeden index léze jako centrum patche
+                    idx_choice = np.random.randint(0, len(foreground_indices[0]))
+                    foreground_centers = [
+                        (foreground_indices[0][idx_choice], 
+                         foreground_indices[1][idx_choice],
+                         foreground_indices[2][idx_choice])
+                    ]
+                else:
+                    foreground_centers = []
+                self.label_centers[volume_idx] = foreground_centers
+            
+            if foreground_centers:
+                # Vybereme náhodné centrum z foreground_centers
+                center = random.choice(foreground_centers)
+                # Určíme hranice patche tak, aby centrum bylo někde v patchi
+                half_pD, half_pH, half_pW = pD // 2, pH // 2, pW // 2
+                d_offset = np.random.randint(-half_pD, half_pD)
+                h_offset = np.random.randint(-half_pH, half_pH)
+                w_offset = np.random.randint(-half_pW, half_pW)
+                
+                d0 = max(0, min(D - pD, center[0] - half_pD + d_offset))
+                h0 = max(0, min(H - pH, center[1] - half_pH + h_offset))
+                w0 = max(0, min(W - pW, center[2] - half_pW + w_offset))
+            else:
+                # Pokud nejsou léze, použijeme náhodné vzorkování
+                d0 = random.randint(0, max(0, D - pD))
+                h0 = random.randint(0, max(0, H - pH))
+                w0 = random.randint(0, max(0, W - pW))
+        else:
+            # Standardní náhodné vzorkování
+            d0 = random.randint(0, max(0, D - pD))
+            h0 = random.randint(0, max(0, H - pH))
+            w0 = random.randint(0, max(0, W - pW))
 
         # Ořízneme patch z každého kanálu a labelu
         patch_input = input_np[:, d0:d0+pD, h0:h0+pH, w0:w0+pW]

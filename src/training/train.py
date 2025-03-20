@@ -11,6 +11,21 @@ from ..loss import dice_coefficient
 from ..data.preprocessing import get_tta_transforms
 from ..data.dataset import get_subject_id_from_filename
 
+
+def custom_collate_fn(batch):
+    """
+    Vlastní collate funkce, která umožňuje zpracovat tensory různých velikostí.
+    Každý vzorek je zpracován samostatně, bez stack operace.
+    
+    Args:
+        batch: List vzorků z datasetu
+        
+    Returns:
+        List obsahující dvojice (inputs, labels)
+    """
+    return batch
+
+
 def train_one_epoch(model, loader, optimizer, loss_fn, device="cuda"):
     """
     Trénuje model jednu epochu.
@@ -40,9 +55,54 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device="cuda"):
     return running_loss / len(loader)
 
 
+def optimal_sliding_window_inference(model, inputs, roi_size, sw_batch_size, overlap=0.5, mode="gaussian", device=None):
+    """
+    Vylepšená verze sliding window inference s pokročilým vážením predikcí.
+    
+    Args:
+        model: Model pro inferenci
+        inputs: Vstupní tensor (B, C, D, H, W)
+        roi_size: Velikost patche pro inferenci (D, H, W)
+        sw_batch_size: Batch size pro sliding window
+        overlap: Míra překrytí mezi sousedními patchy (0-1)
+        mode: Metoda vážení překrývajících se predikcí ("gaussian" nebo "constant")
+        device: Zařízení pro výpočet
+        
+    Returns:
+        torch.Tensor: Predikce pro celý vstup
+    """
+    # Přidána kontrola zařízení
+    if device is None:
+        device = inputs.device
+    
+    # Přidána optimalizace vážení predikcí
+    sigma_scale = 0.125
+    extra_params = {}
+    
+    if mode == "gaussian":
+        extra_params = {
+            "mode": "gaussian", 
+            "sigma_scale": sigma_scale,
+            "padding_mode": "reflect"
+        }
+    else:
+        extra_params = {"mode": "constant"}
+    
+    # Využijeme MONAI implementaci
+    return sliding_window_inference(
+        inputs=inputs,
+        roi_size=roi_size,
+        sw_batch_size=sw_batch_size,
+        predictor=model,
+        overlap=overlap,
+        **extra_params
+    )
+
+
 def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="full_volume",
                        compute_surface_metrics=True, USE_TTA=True, TTA_ANGLE_MAX=3,
-                       batch_size=1, patch_size=(64, 64, 64), tta_forward_fn=None):
+                       batch_size=1, patch_size=(64, 64, 64), tta_forward_fn=None,
+                       sw_overlap=0.5):
     """
     Validuje model na validační sadě.
     
@@ -58,6 +118,7 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
         batch_size: Velikost dávky
         patch_size: Velikost patche pro inferenci
         tta_forward_fn: Funkce pro Test-Time Augmentation
+        sw_overlap: Míra překrytí pro sliding window (0-1)
         
     Returns:
         dict: Slovník s metrikami
@@ -72,30 +133,36 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
     tta_transforms = get_tta_transforms(angle_max=TTA_ANGLE_MAX) if USE_TTA else None
 
     with torch.no_grad():
-        for inputs, labels in loader:
-            inputs, labels = inputs.to(device), labels.to(device)
+        # Upraveno pro zpracování custom_collate_fn výstupu
+        for batch in loader:
+            for sample in batch:
+                inputs, labels = sample
+                inputs, labels = inputs.unsqueeze(0).to(device), labels.unsqueeze(0).to(device)
 
-            if training_mode == "patch":
-                logits = sliding_window_inference(inputs, patch_size, batch_size, model, overlap=0.25)
-            else:
-                logits = model(inputs)
+                if training_mode == "patch":
+                    # Použít optimalizovaný sliding window
+                    logits = optimal_sliding_window_inference(
+                        model=model, 
+                        inputs=inputs, 
+                        roi_size=patch_size, 
+                        sw_batch_size=1, 
+                        overlap=sw_overlap,
+                        mode="gaussian",  # Nebo "constant" pro jednoduché průměrování
+                        device=device
+                    )
+                else:
+                    logits = model(inputs)
 
-            loss = loss_fn(logits, labels)
-            running_loss += loss.item()
+                loss = loss_fn(logits, labels)
+                running_loss += loss.item()
 
-            if USE_TTA and tta_forward_fn is not None:
-                batch_preds = []
-                for i in range(inputs.shape[0]):
-                    input_i = inputs[i].unsqueeze(0)
-                    avg_probs = tta_forward_fn(model, input_i, device, tta_transforms)
-                    pred_i = np.argmax(avg_probs, axis=0)
-                    batch_preds.append(pred_i)
-                preds = np.array(batch_preds)
-            else:
-                preds = torch.argmax(logits, dim=1).cpu().numpy()
+                if USE_TTA and tta_forward_fn is not None:
+                    avg_probs = tta_forward_fn(model, inputs, device, tta_transforms)
+                    pred = np.argmax(avg_probs, axis=0)
+                else:
+                    pred = torch.argmax(logits, dim=1).cpu().numpy()[0]
 
-            labs = labels.cpu().numpy()
-            for pred, label in zip(preds, labs):
+                label = labels.cpu().numpy()[0]
                 dsc = dice_coefficient(pred, label)
                 running_dice += dsc
 
@@ -109,7 +176,7 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
                     running_nsd  += nsd
                 count_samples += 1
 
-    avg_loss = running_loss / len(loader)
+    avg_loss = running_loss / count_samples if count_samples > 0 else 0.0
     avg_dice = running_dice / count_samples if count_samples > 0 else 0.0
 
     metrics = {'val_loss': avg_loss, 'val_dice': avg_dice}
@@ -135,7 +202,14 @@ def setup_training(config, dataset_train, dataset_val, device="cuda"):
     """
     # Vytvoření dataloaderů
     train_loader = DataLoader(dataset_train, batch_size=config["batch_size"], shuffle=True)
-    val_loader = DataLoader(dataset_val, batch_size=config["batch_size"], shuffle=False)
+    
+    # Pro validační loader používáme custom_collate_fn pro zpracování různých velikostí tensorů
+    val_loader = DataLoader(
+        dataset_val, 
+        batch_size=config.get("val_batch_size", 2),  # Můžeme použít menší batch size pro validaci
+        shuffle=False,
+        collate_fn=custom_collate_fn  # Použití vlastní collate_fn
+    )
     
     # Vytvoření modelu
     model = create_model(
