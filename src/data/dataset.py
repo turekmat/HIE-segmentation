@@ -152,6 +152,11 @@ class BONBID3DPatchDataset(Dataset):
         _, D, H, W = input_np.shape
         pD, pH, pW = self.patch_size
 
+        # Zajistíme, že patch_size nepřesahuje velikost objemu
+        pD = min(pD, D)
+        pH = min(pH, H)
+        pW = min(pW, W)
+
         # Určíme náhodný počáteční bod (kontrolujeme, aby patch pasoval)
         d0 = random.randint(0, max(0, D - pD))
         h0 = random.randint(0, max(0, H - pH))
