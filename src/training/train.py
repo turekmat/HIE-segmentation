@@ -181,11 +181,9 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
                     if training_mode == "patch":
                         input_shape = inputs.shape[2:]  # [D, H, W]
                         if any(p >= s for p, s in zip(patch_size, input_shape)):
-                            print(f"Vstup má rozměry {input_shape}, patch_size je {patch_size}. Provádím automatickou úpravu patch_size.")
                             # Vytvoříme nový patch size, který bude respektovat velikost vstupu
                             adjusted_patch_size = [min(p, s) for p, s in zip(patch_size, input_shape)]
                             patch_size = adjusted_patch_size
-                            print(f"Upravený patch_size: {patch_size}")
                     
                     if training_mode == "patch":
                         try:
