@@ -28,7 +28,13 @@ def get_loss_function(loss_name, alpha=0, class_weights=None,
     Returns:
         callable: Ztrátová funkce
     """
-    if loss_name == "weighted_ce_dice":
+    if loss_name == "weighted_ce":
+        ce_criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
+        def loss_fn(logits, labels):
+            return ce_criterion(logits, labels)
+        return loss_fn
+        
+    elif loss_name == "weighted_ce_dice":
         ce_criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
         def loss_fn(logits, labels):
             return weighted_ce_plus_dice_loss(

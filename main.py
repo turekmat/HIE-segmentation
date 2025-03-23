@@ -802,7 +802,7 @@ def main():
     parser.add_argument("--loss_name", type=str, 
                         choices=["weighted_ce_dice", "log_cosh_dice", "focal_tversky", 
                                  "log_hausdorff", "focal", "focal_dice_combo", 
-                                 "focal_ce_combo", "dice_focal"],
+                                 "focal_ce_combo", "dice_focal", "weighted_ce"],
                         help="Jméno ztrátové funkce")
     parser.add_argument("--focal_alpha", type=float, help="Alpha parametr pro Focal loss")
     parser.add_argument("--focal_gamma", type=float, help="Gamma parametr pro Focal loss")
