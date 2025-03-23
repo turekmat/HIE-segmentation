@@ -5,6 +5,7 @@ import torch
 import wandb
 import random
 import numpy as np
+import pickle
 from pathlib import Path
 from torch.utils.data import Subset
 
@@ -27,7 +28,7 @@ if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
         os.environ['WANDB_MODE'] = 'disabled'
 
 from src.config import get_default_config, parse_args_to_config
-from src.data.dataset import BONBID3DFullVolumeDataset, BONBID3DPatchDataset
+from src.data.dataset import BONBID3DFullVolumeDataset, BONBID3DPatchDataset, get_subject_id_from_filename
 from src.training.train import (
     setup_training, 
     train_one_epoch, 
@@ -111,9 +112,78 @@ def get_optimal_patch_size(dataset, requested_patch_size, min_dim_size=16):
         return requested_patch_size
 
 
+def create_fixed_split(dataset, split_ratio=0.8, extended_dataset=False, split_seed=None):
+    """
+    Vytvoří pevné rozdělení dat na trénovací a validační sadu (bez k-fold CV).
+    
+    Args:
+        dataset: Dataset k rozdělení
+        split_ratio: Poměr trénovacích dat (např. 0.8 = 80% train, 20% validation)
+        extended_dataset: Zda se jedná o rozšířený dataset s orig/aug soubory
+        split_seed: Specifický seed pro rozdělení (pokud None, použije se globální seed)
+        
+    Returns:
+        list: Seznam s jedním foldem [train_indices, val_indices]
+    """
+    # Získání všech souborů
+    all_files = dataset.adc_files
+    
+    # Rozdělení podle subjektů
+    subject_to_indices = {}
+    for i, fname in enumerate(all_files):
+        subj_id = get_subject_id_from_filename(fname)
+        if subj_id not in subject_to_indices:
+            subject_to_indices[subj_id] = []
+        subject_to_indices[subj_id].append(i)
+    
+    # Seznam všech subjektů (promíchaný s použitím zadaného seedu)
+    all_subjects = list(subject_to_indices.keys())
+    
+    # Pokud je zadán vlastní seed pro rozdělení, použijeme ho
+    if split_seed is not None:
+        rng = np.random.RandomState(split_seed)
+        rng.shuffle(all_subjects)
+    else:
+        np.random.shuffle(all_subjects)
+    
+    # Výpočet dělícího bodu pro split
+    split_idx = int(len(all_subjects) * split_ratio)
+    
+    # Výběr subjektů pro training a validation
+    train_subjects = all_subjects[:split_idx]
+    val_subjects = all_subjects[split_idx:]
+    
+    # Výběr validačních a trénovacích indexů
+    val_indices = []
+    if extended_dataset:
+        # Pokud máme rozšířený dataset, vybíráme pouze soubory bez "_aug" označení
+        for subj_id in val_subjects:
+            indices_for_subject = subject_to_indices[subj_id]
+            for idx in indices_for_subject:
+                adc_fname = all_files[idx]
+                if "_aug" not in adc_fname.lower():
+                    val_indices.append(idx)
+    else:
+        # Klasický dataset: použijeme všechny soubory daného subjektu
+        for subj_id in val_subjects:
+            indices_for_subject = subject_to_indices[subj_id]
+            val_indices.extend(indices_for_subject)
+    
+    # Výběr trénovacích indexů - všechny soubory subjektů, které nejsou ve validaci
+    train_indices = []
+    for subj_id in train_subjects:
+        indices_for_subject = subject_to_indices[subj_id]
+        train_indices.extend(indices_for_subject)
+    
+    print(f"Pevné rozdělení dat: {len(train_subjects)} trénovacích subjektů ({len(train_indices)} vzorků), "
+          f"{len(val_subjects)} validačních subjektů ({len(val_indices)} vzorků)")
+    
+    return [(train_indices, val_indices)]
+
+
 def run_cross_validation(config):
     """
-    Spustí k-fold cross-validaci.
+    Spustí k-fold cross-validaci nebo pevné rozdělení dat.
     
     Args:
         config: Konfigurační slovník s parametry
@@ -192,13 +262,70 @@ def run_cross_validation(config):
                 if config["use_wandb"]:
                     wandb.config.update({"patch_size": optimal_patch_size}, allow_val_change=True)
     
-    # Vytvoření foldů
-    print(f"Vytváření {config['n_folds']}-fold cross-validace...")
-    folds = create_cv_folds(
-        full_dataset, 
-        config["n_folds"], 
-        extended_dataset=config["extended_dataset"]
-    )
+    # Vytvoření foldů nebo pevného rozdělení
+    if config.get("fixed_split", False):
+        print("Používám pevné rozdělení dat (80/20) místo k-fold cross-validace...")
+        
+        # Určení cesty k souboru s pevným rozdělením
+        split_file = config.get("fixed_split_file", None)
+        if split_file is None:
+            # Vytvoření jména souboru na základě seedu
+            split_seed = config.get("fixed_split_seed", config["seed"])
+            split_file = os.path.join(config["output_dir"], f"fixed_split_seed{split_seed}.pkl")
+        
+        # Pokud soubor existuje, načteme rozdělení
+        if os.path.exists(split_file):
+            print(f"Načítám existující pevné rozdělení ze souboru {split_file}")
+            try:
+                with open(split_file, 'rb') as f:
+                    split_data = pickle.load(f)
+                    train_indices = split_data['train']
+                    val_indices = split_data['val']
+                folds = [(train_indices, val_indices)]
+                print(f"Načteno: {len(train_indices)} trénovacích a {len(val_indices)} validačních vzorků")
+            except Exception as e:
+                print(f"Chyba při načítání pevného rozdělení: {e}")
+                print("Vytvářím nové pevné rozdělení...")
+                # Vytvoření nového pevného rozdělení
+                split_seed = config.get("fixed_split_seed", config["seed"])
+                folds = create_fixed_split(
+                    full_dataset, 
+                    split_ratio=0.8, 
+                    extended_dataset=config["extended_dataset"],
+                    split_seed=split_seed
+                )
+                
+                # Uložení pro pozdější použití
+                train_indices, val_indices = folds[0]
+                split_data = {'train': train_indices, 'val': val_indices}
+                with open(split_file, 'wb') as f:
+                    pickle.dump(split_data, f)
+                print(f"Pevné rozdělení uloženo do souboru {split_file}")
+        else:
+            # Vytvoření nového pevného rozdělení
+            print(f"Vytvářím nové pevné rozdělení dat (bude uloženo do {split_file})...")
+            split_seed = config.get("fixed_split_seed", config["seed"])
+            folds = create_fixed_split(
+                full_dataset, 
+                split_ratio=0.8, 
+                extended_dataset=config["extended_dataset"],
+                split_seed=split_seed
+            )
+            
+            # Uložení pro pozdější použití
+            train_indices, val_indices = folds[0]
+            split_data = {'train': train_indices, 'val': val_indices}
+            with open(split_file, 'wb') as f:
+                pickle.dump(split_data, f)
+            print(f"Pevné rozdělení uloženo do souboru {split_file}")
+    else:
+        # Standardní k-fold CV
+        print(f"Vytváření {config['n_folds']}-fold cross-validace...")
+        folds = create_cv_folds(
+            full_dataset, 
+            config["n_folds"], 
+            extended_dataset=config["extended_dataset"]
+        )
     
     # Určení device
     device = torch.device(config["device"])
@@ -221,8 +348,11 @@ def run_cross_validation(config):
     # Cykly přes všechny foldy
     all_fold_metrics = []
     
+    # Pro fixní rozdělení bude jen jeden "fold"
+    num_folds = 1 if config.get("fixed_split", False) else config["n_folds"]
+    
     for fold_idx, (train_indices, val_indices) in enumerate(folds):
-        print(f"\n========== FOLD {fold_idx+1}/{config['n_folds']} ==========")
+        print(f"\n========== {'FOLD ' + str(fold_idx+1) + '/' + str(num_folds) if not config.get('fixed_split', False) else 'PEVNÉ ROZDĚLENÍ'} ==========")
         
         # Vytvoření trénovacího a validačního datasetu
         if config["training_mode"] == "patch":
@@ -348,7 +478,7 @@ def run_cross_validation(config):
             log_metrics(
                 metrics=metrics,
                 epoch=epoch,
-                fold_idx=fold_idx,
+                fold_idx=None if config.get("fixed_split", False) else fold_idx,
                 lr=curr_lr,
                 wandb_enabled=config["use_wandb"]
             )
@@ -395,22 +525,37 @@ def run_cross_validation(config):
         all_fold_metrics.append(fold_metrics)
         
         # Výpis výsledků pro tento fold
-        print(f"\nVýsledky pro FOLD {fold_idx+1}:")
+        if config.get("fixed_split", False):
+            print(f"\nVýsledky pro PEVNÉ ROZDĚLENÍ:")
+        else:
+            print(f"\nVýsledky pro FOLD {fold_idx+1}:")
+            
         for k, v in fold_metrics.items():
             print(f"  {k}: {v:.4f}")
     
     # Výpis průměrných výsledků přes všechny foldy
-    print("\n========== CELKOVÉ VÝSLEDKY ==========")
-    avg_metrics = {}
-    for metric in all_fold_metrics[0].keys():
-        avg_value = sum(fold[metric] for fold in all_fold_metrics) / len(all_fold_metrics)
-        avg_metrics[metric] = avg_value
-        print(f"Průměr {metric}: {avg_value:.4f}")
+    if not config.get("fixed_split", False) and len(all_fold_metrics) > 1:
+        print("\n========== CELKOVÉ VÝSLEDKY ==========")
+        avg_metrics = {}
+        for metric in all_fold_metrics[0].keys():
+            avg_value = sum(fold[metric] for fold in all_fold_metrics) / len(all_fold_metrics)
+            avg_metrics[metric] = avg_value
+            print(f"Průměr {metric}: {avg_value:.4f}")
+        
+        # Logování finálních metrik do wandb
+        if config["use_wandb"]:
+            for k, v in avg_metrics.items():
+                wandb.run.summary[f"avg_{k}"] = v
+    else:
+        # Pevné rozdělení nebo pouze jeden fold
+        avg_metrics = all_fold_metrics[0]
+        
+        if config["use_wandb"]:
+            for k, v in avg_metrics.items():
+                wandb.run.summary[k] = v
     
-    # Logování finálních metrik do wandb
+    # Ukončení wandb
     if config["use_wandb"]:
-        for k, v in avg_metrics.items():
-            wandb.run.summary[f"avg_{k}"] = v
         wandb.finish()
     
     return avg_metrics
@@ -644,6 +789,14 @@ def main():
                         help="Povolit normalizaci rozestupů voxelů")
     parser.add_argument("--preprocessing", action="store_true",
                         help="Provést preprocessing dat (bounding box, crop, padding) před trénováním")
+    
+    # Parametry fixního rozdělení dat
+    parser.add_argument("--fixed_split", action="store_true",
+                        help="Použít pevné rozdělení dat místo k-fold CV (80/20)")
+    parser.add_argument("--fixed_split_seed", type=int, default=None,
+                        help="Seed pro vytvoření pevného rozdělení dat (pokud se liší od hlavního seedu)")
+    parser.add_argument("--fixed_split_file", type=str, default=None,
+                        help="Cesta k souboru s uloženým pevným rozdělením dat (.pkl)")
 
     # Parametry ztráty a metrik
     parser.add_argument("--loss_name", type=str, 

@@ -502,7 +502,7 @@ def log_metrics(metrics, epoch, fold_idx=None, lr=None, wandb_enabled=True):
     Args:
         metrics: Slovník s metrikami
         epoch: Aktuální epocha
-        fold_idx: Index aktuálního foldu
+        fold_idx: Index aktuálního foldu (None pro pevné rozdělení)
         lr: Aktuální learning rate
         wandb_enabled: Zda je wandb povoleno
     """
@@ -510,6 +510,8 @@ def log_metrics(metrics, epoch, fold_idx=None, lr=None, wandb_enabled=True):
     log_str = ""
     if fold_idx is not None:
         log_str += f"[FOLD {fold_idx+1}] "
+    else:
+        log_str += "[PEVNÉ ROZDĚLENÍ] "
     
     log_str += f"Epoch {epoch} => "
     
@@ -527,6 +529,8 @@ def log_metrics(metrics, epoch, fold_idx=None, lr=None, wandb_enabled=True):
         
         if fold_idx is not None:
             wandb_log['fold'] = fold_idx + 1
+        else:
+            wandb_log['fold'] = 0  # 0 označuje pevné rozdělení
         
         wandb_log['epoch'] = epoch
         
