@@ -6,7 +6,7 @@ import random
 from torch.utils.data import Dataset
 import re
 
-from .preprocessing import random_3d_augmentation, filter_augmented_files, get_base_id
+from .preprocessing import random_3d_augmentation, filter_augmented_files, get_base_id, heavy_3d_augmentation, soft_3d_augmentation
 
 class BONBID3DFullVolumeDataset(Dataset):
     """
@@ -22,10 +22,11 @@ class BONBID3DFullVolumeDataset(Dataset):
         extended_dataset: Zda se jedná o rozšířený dataset s orig/aug soubory
         max_aug_per_orig: Maximální počet augmentovaných souborů na jeden originální
         use_z_adc: Zda používat Z-ADC modalitu (pokud False, použije se pouze ADC)
+        augmentation_type: Typ augmentace ('soft' nebo 'heavy')
     """
     def __init__(self, adc_folder, z_folder, label_folder, augment=False, 
                  allowed_patient_ids=None, extended_dataset=True, max_aug_per_orig=0, 
-                 use_z_adc=True):
+                 use_z_adc=True, augmentation_type='soft'):
         super().__init__()
 
         self.adc_folder = adc_folder
@@ -35,6 +36,7 @@ class BONBID3DFullVolumeDataset(Dataset):
         self.extended_dataset = extended_dataset
         self.max_aug_per_orig = max_aug_per_orig
         self.use_z_adc = use_z_adc
+        self.augmentation_type = augmentation_type
 
         self.adc_files = sorted([f for f in os.listdir(adc_folder) if f.endswith('.mha')])
         
@@ -88,7 +90,11 @@ class BONBID3DFullVolumeDataset(Dataset):
             zadc_np = np.zeros_like(adc_np)
 
         if self.augment:
-            adc_np, zadc_np, label_np = random_3d_augmentation(adc_np, zadc_np, label_np)
+            if self.augmentation_type == 'heavy':
+                adc_np, zadc_np, label_np = heavy_3d_augmentation(adc_np, zadc_np, label_np)
+            else:
+                # Výchozí je soft augmentace
+                adc_np, zadc_np, label_np = soft_3d_augmentation(adc_np, zadc_np, label_np)
 
         # Převedeme na Torch tensor
         adc_t  = torch.from_numpy(adc_np).unsqueeze(0)
@@ -130,9 +136,11 @@ class BONBID3DPatchDataset(Dataset):
         augment (bool): Použít nebo ne data augmentaci na jednotlivých patchech.
         intelligent_sampling (bool): Použít inteligentní vzorkování zaměřené na oblasti s lézemi.
         foreground_ratio (float): Poměr patchů, které by měly obsahovat popředí (léze).
+        augmentation_type (str): Typ augmentace ('soft' nebo 'heavy').
     """
     def __init__(self, full_volume_dataset, patch_size=(64,64,64), patches_per_volume=10, 
-                 augment=False, intelligent_sampling=True, foreground_ratio=0.7):
+                 augment=False, intelligent_sampling=True, foreground_ratio=0.7,
+                 augmentation_type='soft'):
         super().__init__()
         self.full_volume_dataset = full_volume_dataset
         self.patch_size = patch_size
@@ -141,6 +149,7 @@ class BONBID3DPatchDataset(Dataset):
         self.num_volumes = len(full_volume_dataset)
         self.intelligent_sampling = intelligent_sampling
         self.foreground_ratio = foreground_ratio
+        self.augmentation_type = augmentation_type
         self.label_centers = {}  # Cache pro středy lézí
 
     def __len__(self):
@@ -237,7 +246,13 @@ class BONBID3DPatchDataset(Dataset):
             # Uvažujeme, že první kanál je ADC a druhý je Z_ADC – zavoláme tedy existující funkci
             adc_patch = patch_input[0]
             zadc_patch = patch_input[1] if C > 1 else np.zeros_like(adc_patch)
-            adc_patch, zadc_patch, patch_label = random_3d_augmentation(adc_patch, zadc_patch, patch_label)
+            
+            if self.augmentation_type == 'heavy':
+                adc_patch, zadc_patch, patch_label = heavy_3d_augmentation(adc_patch, zadc_patch, patch_label)
+            else:
+                # Výchozí je soft augmentace
+                adc_patch, zadc_patch, patch_label = soft_3d_augmentation(adc_patch, zadc_patch, patch_label)
+                
             patch_input = np.stack([adc_patch, zadc_patch], axis=0) if C > 1 else np.expand_dims(adc_patch, axis=0)
 
         # Převedeme zpět na Torch tensory

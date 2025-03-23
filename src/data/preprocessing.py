@@ -57,7 +57,7 @@ def get_base_id(filename: str):
         return filename_lower
 
 
-def random_3d_augmentation(
+def soft_3d_augmentation(
     adc_np,
     zadc_np,
     label_np,
@@ -69,7 +69,7 @@ def random_3d_augmentation(
     smooth_sigma=1.0
 ):
     """
-    Provádí augmentaci 3D objemů.
+    Provádí lehkou augmentaci 3D objemů.
 
     Args:
         adc_np: Numpy array ADC objemu
@@ -109,6 +109,136 @@ def random_3d_augmentation(
     if random.random() < p_smooth:
         adc_np   = gaussian_filter(adc_np, sigma=smooth_sigma)
         zadc_np  = gaussian_filter(zadc_np, sigma=smooth_sigma)
+
+    return adc_np, zadc_np, label_np
+
+
+def heavy_3d_augmentation(
+    adc_np,
+    zadc_np,
+    label_np,
+    angle_max=15,
+    p_flip_x=0.5,
+    p_flip_y=0.5,
+    p_flip_z=0.5,
+    p_noise=0.5,
+    noise_std_adc=0.02,
+    noise_std_zadc=0.2,
+    p_smooth=0.3,
+    smooth_sigma_range=(0.5, 2.0),
+    p_intensity=0.7
+):
+    """
+    Provádí silnější augmentaci 3D objemů, vhodnou pro zvýšení robustnosti modelu.
+
+    Args:
+        adc_np: Numpy array ADC objemu (rozsah 0-1)
+        zadc_np: Numpy array Z-ADC objemu (rozsah -10 až +10)
+        label_np: Numpy array masky
+        angle_max: Maximální úhel rotace (±stupňů)
+        p_flip_x: Pravděpodobnost flipu podél osy X
+        p_flip_y: Pravděpodobnost flipu podél osy Y
+        p_flip_z: Pravděpodobnost flipu podél osy Z
+        p_noise: Pravděpodobnost přidání šumu
+        noise_std_adc: Směrodatná odchylka pro šum v ADC mapě
+        noise_std_zadc: Směrodatná odchylka pro šum v Z-ADC mapě
+        p_smooth: Pravděpodobnost vyhlazení
+        smooth_sigma_range: Rozsah sigma parametru pro Gaussovské vyhlazení
+        p_intensity: Pravděpodobnost úpravy intenzity
+
+    Returns:
+        Augmentované objemy (adc_np, zadc_np, label_np)
+    """
+    # 1. Náhodné flipy podél všech os
+    if random.random() < p_flip_x:
+        adc_np = np.flip(adc_np, axis=0).copy()
+        zadc_np = np.flip(zadc_np, axis=0).copy()
+        label_np = np.flip(label_np, axis=0).copy()
+    
+    if random.random() < p_flip_y:
+        adc_np = np.flip(adc_np, axis=1).copy()
+        zadc_np = np.flip(zadc_np, axis=1).copy()
+        label_np = np.flip(label_np, axis=1).copy()
+    
+    if random.random() < p_flip_z:
+        adc_np = np.flip(adc_np, axis=2).copy()
+        zadc_np = np.flip(zadc_np, axis=2).copy()
+        label_np = np.flip(label_np, axis=2).copy()
+
+    # 2. Náhodná výraznější rotace
+    angle = random.uniform(-angle_max, angle_max)
+    axes = random.choice([(0, 1), (0, 2), (1, 2)])  # vybereme jednu dvojici os
+    adc_np = rotate(adc_np, angle=angle, axes=axes, reshape=False, order=1, mode='nearest')
+    zadc_np = rotate(zadc_np, angle=angle, axes=axes, reshape=False, order=1, mode='nearest')
+    label_np = rotate(label_np, angle=angle, axes=axes, reshape=False, order=0, mode='nearest')
+
+    # 3. Úpravy intenzity (brightness, contrast, gamma)
+    if random.random() < p_intensity:
+        # Pro ADC mapu - rozsah 0-1
+        # Brightness: Přičítáme/odečítáme konstantu
+        brightness_factor_adc = random.uniform(-0.1, 0.1)  # ±10% z rozsahu 0-1
+        
+        # Kontrast: Násobíme konstantou a upravujeme offset pro zachování rozsahu
+        contrast_factor_adc = random.uniform(0.8, 1.2)
+        
+        # Gamma korekce: Používáme mocniny (hodnoty < 1 zesvětlují, > 1 ztmavují)
+        gamma_factor_adc = random.uniform(0.8, 1.2)
+        
+        # Aplikace na ADC - zachováváme rozsah 0-1
+        # Aplikujeme jen na nenulové hodnoty, abychom zachovali nulové pozadí
+        mask_nonzero = adc_np > 0
+        
+        # Brightness
+        adc_np[mask_nonzero] = adc_np[mask_nonzero] + brightness_factor_adc
+        
+        # Kontrast
+        mean_adc = np.mean(adc_np[mask_nonzero])
+        adc_np[mask_nonzero] = (adc_np[mask_nonzero] - mean_adc) * contrast_factor_adc + mean_adc
+        
+        # Gamma
+        adc_np[mask_nonzero] = np.power(adc_np[mask_nonzero], gamma_factor_adc)
+        
+        # Oříznutí hodnot na rozsah 0-1
+        adc_np = np.clip(adc_np, 0, 1)
+        
+        # Pro ZADC mapu - úpravy musí respektovat rozsah -10 až +10
+        # ZADC se počítá z ADC, takže upravíme proporčně 
+        # Brightness - přičtení offset k nenulové části
+        brightness_factor_zadc = random.uniform(-1.0, 1.0)
+        
+        # Kontrast
+        contrast_factor_zadc = random.uniform(0.85, 1.15)
+        
+        # Aplikace na ZADC
+        mask_nonzero_z = zadc_np != 0
+        
+        # Brightness
+        zadc_np[mask_nonzero_z] = zadc_np[mask_nonzero_z] + brightness_factor_zadc
+        
+        # Kontrast
+        mean_zadc = np.mean(zadc_np[mask_nonzero_z]) if np.any(mask_nonzero_z) else 0
+        zadc_np[mask_nonzero_z] = (zadc_np[mask_nonzero_z] - mean_zadc) * contrast_factor_zadc + mean_zadc
+        
+        # Oříznutí hodnot na rozumný rozsah
+        zadc_np = np.clip(zadc_np, -15, 15)
+
+    # 4. Gaussovský šum (různé parametry pro ADC a ZADC)
+    if random.random() < p_noise:
+        # Pro ADC (0-1)
+        noise_adc = np.random.normal(0, noise_std_adc, size=adc_np.shape)
+        adc_np = adc_np + noise_adc
+        adc_np = np.clip(adc_np, 0, 1)
+        
+        # Pro ZADC (-10 až +10)
+        noise_zadc = np.random.normal(0, noise_std_zadc, size=zadc_np.shape)
+        zadc_np = zadc_np + noise_zadc
+        zadc_np = np.clip(zadc_np, -15, 15)
+
+    # 5. Gaussovské vyhlazení s variabilním parametrem
+    if random.random() < p_smooth:
+        sigma = random.uniform(smooth_sigma_range[0], smooth_sigma_range[1])
+        adc_np = gaussian_filter(adc_np, sigma=sigma)
+        zadc_np = gaussian_filter(zadc_np, sigma=sigma)
 
     return adc_np, zadc_np, label_np
 
@@ -394,4 +524,7 @@ def get_tta_transforms(angle_max=3):
     for flip in flips:
         for rot in rotations:
             tta_transforms.append({"flip": flip, "rotation": rot})
-    return tta_transforms 
+    return tta_transforms
+
+# Zpětná kompatibilita - alias funkce
+random_3d_augmentation = soft_3d_augmentation 

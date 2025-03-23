@@ -364,7 +364,8 @@ def run_cross_validation(config):
                 augment=config["use_augmentation"],
                 extended_dataset=config["extended_dataset"],
                 max_aug_per_orig=config.get("max_aug_per_orig", 0),
-                use_z_adc=config["in_channels"] > 1
+                use_z_adc=config["in_channels"] > 1,
+                augmentation_type=config.get("augmentation_type", "soft")
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
@@ -376,7 +377,8 @@ def run_cross_validation(config):
                 patches_per_volume=config["patches_per_volume"],
                 augment=config["use_augmentation"],
                 intelligent_sampling=config.get("intelligent_sampling", True),
-                foreground_ratio=config.get("foreground_ratio", 0.7)
+                foreground_ratio=config.get("foreground_ratio", 0.7),
+                augmentation_type=config.get("augmentation_type", "soft")
             )
             
             val_dataset_full = BONBID3DFullVolumeDataset(
@@ -400,7 +402,8 @@ def run_cross_validation(config):
                 augment=config["use_augmentation"],
                 extended_dataset=config["extended_dataset"],
                 max_aug_per_orig=config.get("max_aug_per_orig", 0),
-                use_z_adc=config["in_channels"] > 1
+                use_z_adc=config["in_channels"] > 1,
+                augmentation_type=config.get("augmentation_type", "soft")
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
@@ -755,6 +758,8 @@ def main():
                         help="Režim trénování (patch nebo full_volume)")
     parser.add_argument("--no_augmentation", action="store_false", dest="use_augmentation",
                         help="Vypnout augmentaci dat")
+    parser.add_argument("--augmentation_type", type=str, choices=["soft", "heavy"], default="soft",
+                        help="Typ augmentace pro trénování ('soft' pro lehké augmentace, 'heavy' pro silnější augmentace)")
     parser.add_argument("--n_folds", type=int, help="Počet foldů pro cross-validaci")
     parser.add_argument("--use_ohem", action="store_true", help="Povolit Online Hard Example Mining")
     parser.add_argument("--ohem_ratio", type=float, default=0.15, help="Poměr těžkých příkladů pro OHEM")
