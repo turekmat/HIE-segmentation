@@ -509,7 +509,22 @@ def run_cross_validation(config):
                     
                     print(f"\nProvádím validační inferenci pro všechny vzorky v epochě {epoch}:")
                     
-                    # Zpracujeme všechny validační vzorky, ne jen první
+                    # Kontrola, zda existuje uložený nejlepší model
+                    best_model_path = os.path.join(config["model_dir"], f"best_model_fold{fold_idx+1}.pth")
+                    if os.path.exists(best_model_path):
+                        print(f"  Načítám nejlepší model z: {best_model_path}")
+                        # Uložení aktuálního stavu modelu pro pozdější obnovení
+                        current_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                        
+                        # Načtení nejlepšího modelu
+                        model.load_state_dict(torch.load(best_model_path, map_location=device))
+                        print(f"  Používám nejlepší model s DICE={best_val_dice:.4f} pro inferenci")
+                        using_best_model = True
+                    else:
+                        print(f"  Nejlepší model nenalezen, používám aktuální model z epochy {epoch}")
+                        using_best_model = False
+                    
+                    # Zpracujeme všechny validační vzorky
                     for val_idx_pos, val_idx in enumerate(val_indices):
                         print(f"  Vzorek {val_idx_pos+1}/{len(val_indices)} (index {val_idx})")
                         
@@ -541,11 +556,20 @@ def run_cross_validation(config):
                         # Uložení segmentace a vizualizací pomocí nové funkce pro 3 sloupce
                         from src.inference import save_validation_results_pdf
                         
+                        # Upravíme prefix, aby odrážel, že jde o nejlepší model
+                        prefix = f"best_val_{val_idx_pos}" if using_best_model else f"val_{val_idx_pos}"
+                        
                         # Uložení MHA souboru a standardního PDF
-                        save_segmentation_with_metrics(result, output_dir, prefix=f"val_{val_idx_pos}", save_pdf_comparison=False)
+                        save_segmentation_with_metrics(result, output_dir, prefix=prefix, save_pdf_comparison=False)
                         
                         # Uložení nového PDF se třemi sloupci (ZADC, LABEL, PRED)
-                        save_validation_results_pdf(result, output_dir, prefix=f"val3col_{val_idx_pos}")
+                        pdf_prefix = f"best_val3col_{val_idx_pos}" if using_best_model else f"val3col_{val_idx_pos}"
+                        save_validation_results_pdf(result, output_dir, prefix=pdf_prefix)
+                    
+                    # Vrácení modelu do původního stavu, pokud byl načten nejlepší model
+                    if using_best_model:
+                        print("  Obnovuji původní stav modelu z aktuální epochy")
+                        model.load_state_dict(current_model_state)
                     
                     print(f"Validační inference dokončena. Výsledky jsou uloženy v: {output_dir}")
         

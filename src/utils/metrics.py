@@ -114,5 +114,13 @@ def dice_coefficient(y_pred, y_true):
     epsilon = 1e-6
     y_pred = y_pred.astype(np.bool_)
     y_true = y_true.astype(np.bool_)
+    
+    # Pokud jsou obě masky prázdné (neobsahují žádné pozitivní hodnoty),
+    # vracíme 1.0 (perfektní shoda - model správně predikoval absenci léze)
+    pred_sum = np.sum(y_pred)
+    true_sum = np.sum(y_true)
+    if pred_sum == 0 and true_sum == 0:
+        return 1.0
+    
     intersection = np.sum(y_pred & y_true)
-    return (2.0 * intersection) / (np.sum(y_pred) + np.sum(y_true) + epsilon) 
+    return (2.0 * intersection) / (pred_sum + true_sum + epsilon) 
