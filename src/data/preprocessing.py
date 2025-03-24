@@ -195,8 +195,10 @@ def heavy_3d_augmentation(
         mean_adc = np.mean(adc_np[mask_nonzero])
         adc_np[mask_nonzero] = (adc_np[mask_nonzero] - mean_adc) * contrast_factor_adc + mean_adc
         
-        # Gamma
-        adc_np[mask_nonzero] = np.power(adc_np[mask_nonzero], gamma_factor_adc)
+        # Gamma - upraveno pro předcházení chybě "invalid value encountered in power"
+        # Zajistíme, že všechny hodnoty jsou kladné před použitím mocniny
+        adc_np_positive = np.maximum(adc_np[mask_nonzero], 1e-8)  # Malá kladná hodnota místo 0
+        adc_np[mask_nonzero] = np.power(adc_np_positive, gamma_factor_adc)
         
         # Oříznutí hodnot na rozsah 0-1
         adc_np = np.clip(adc_np, 0, 1)
