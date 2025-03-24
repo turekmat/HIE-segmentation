@@ -503,26 +503,51 @@ def run_cross_validation(config):
             # Inference na validačních datech (každých N epoch)
             if config["inference_every_n_epochs"] > 0 and epoch % config["inference_every_n_epochs"] == 0:
                 if val_indices:
-                    val_idx = val_indices[0]  # První validační vzorek
-                    adc_path = os.path.join(config["adc_folder"], full_dataset.adc_files[val_idx])
-                    z_path = os.path.join(config["z_folder"], full_dataset.z_files[val_idx])
-                    label_path = os.path.join(config["label_folder"], full_dataset.lab_files[val_idx])
-                    
-                    result = infer_full_volume(
-                        model=model,
-                        input_paths=[adc_path, z_path],
-                        label_path=label_path,
-                        device=device,
-                        use_tta=config["use_tta"],
-                        tta_angle_max=config["tta_angle_max"],
-                        training_mode=config["training_mode"],
-                        patch_size=config["patch_size"],
-                        batch_size=config["batch_size"],
-                        use_z_adc=config["in_channels"] > 1
-                    )
-                    
+                    # Vytvoření výstupního adresáře pro tuto epochu
                     output_dir = os.path.join(config["output_dir"], f"fold{fold_idx+1}", f"epoch{epoch}")
-                    save_segmentation_with_metrics(result, output_dir, prefix="sample", save_pdf_comparison=True)
+                    os.makedirs(output_dir, exist_ok=True)
+                    
+                    print(f"\nProvádím validační inferenci pro všechny vzorky v epochě {epoch}:")
+                    
+                    # Zpracujeme všechny validační vzorky, ne jen první
+                    for val_idx_pos, val_idx in enumerate(val_indices):
+                        print(f"  Vzorek {val_idx_pos+1}/{len(val_indices)} (index {val_idx})")
+                        
+                        # Cesty k datům
+                        adc_path = os.path.join(config["adc_folder"], full_dataset.adc_files[val_idx])
+                        z_path = os.path.join(config["z_folder"], full_dataset.z_files[val_idx])
+                        label_path = os.path.join(config["label_folder"], full_dataset.lab_files[val_idx])
+                        
+                        # Provedení inference
+                        result = infer_full_volume(
+                            model=model,
+                            input_paths=[adc_path, z_path],
+                            label_path=label_path,
+                            device=device,
+                            use_tta=config["use_tta"],
+                            tta_angle_max=config["tta_angle_max"],
+                            training_mode=config["training_mode"],
+                            patch_size=config["patch_size"],
+                            batch_size=config["batch_size"],
+                            use_z_adc=config["in_channels"] > 1
+                        )
+                        
+                        # Výpis metrik
+                        if result["metrics"]:
+                            metrics = result["metrics"]
+                            patient_id = result.get('patient_id', f'idx_{val_idx}')
+                            print(f"    Pacient {patient_id}: Dice={metrics['dice']:.4f}, MASD={metrics['masd']:.4f}, NSD={metrics['nsd']:.4f}")
+                        
+                        # Uložení segmentace a vizualizací pomocí nové funkce pro 3 sloupce
+                        from src.inference import save_validation_results_pdf
+                        
+                        # Uložení MHA souboru a standardního PDF
+                        save_segmentation_with_metrics(result, output_dir, prefix=f"val_{val_idx_pos}", save_pdf_comparison=False)
+                        
+                        # Uložení nového PDF se třemi sloupci (ZADC, LABEL, PRED)
+                        save_validation_results_pdf(result, output_dir, prefix=f"val3col_{val_idx_pos}")
+                    
+                    print(f"Validační inference dokončena. Výsledky jsou uloženy v: {output_dir}")
         
         # Ukládání metrik pro fold
         all_fold_metrics.append(fold_metrics)

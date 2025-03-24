@@ -4,5 +4,6 @@ from .inference import (
     infer_full_volume_moe,
     save_segmentation_to_file,
     save_segmentation_with_metrics,
-    save_slice_comparison_pdf
+    save_slice_comparison_pdf,
+    save_validation_results_pdf
 ) 

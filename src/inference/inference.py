@@ -393,6 +393,135 @@ def save_slice_comparison_pdf(result, output_dir, prefix="comparison"):
     return output_path
 
 
+def save_validation_results_pdf(result, output_dir, prefix="validation"):
+    """
+    Vytvoří PDF soubor se všemi řezy validačního vzorku s třemi samostatnými sloupci: 
+    ZADC mapa, LABEL mapa a predikce modelu.
+    
+    Args:
+        result: Výsledek z infer_full_volume nebo infer_full_volume_moe
+        output_dir: Výstupní adresář
+        prefix: Prefix pro název souboru
+        
+    Returns:
+        str: Cesta k vytvořenému PDF souboru
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    prediction = result['prediction']  # shape (D, H, W)
+    reference = result['reference']    # shape (D, H, W)
+    
+    if reference is None:
+        print("Ground truth reference není k dispozici, nelze vytvořit PDF porovnání.")
+        return None
+    
+    # Získání metadat pro název souboru
+    metrics = result.get('metrics', {})
+    dice = metrics.get('dice', 0.0)
+    masd = metrics.get('masd', 0.0)
+    nsd = metrics.get('nsd', 0.0)
+    patient_id = result.get('patient_id', 'unknown')
+    
+    # Vytvoření cesty k souboru
+    output_name = f"{prefix}_{patient_id}_dice{dice:.3f}.pdf"
+    output_path = os.path.join(output_dir, output_name)
+    
+    # Zjištění počtu řezů a definice barev pro vizualizaci
+    num_slices = reference.shape[0]
+    rows_per_page = 6  # Počet řezů na stránku
+    
+    # Definice barevných map pro segmentace
+    label_cmap = 'jet'  # Více barev pro label
+    pred_cmap = 'jet'   # Více barev pro predikci
+    
+    # Načtení vstupních obrazů
+    zadc_vol = None
+    if len(result['input_paths']) > 1:
+        try:
+            zadc_path = result['input_paths'][1]  # ZADC je druhý vstup
+            zadc_sitk = sitk.ReadImage(zadc_path)
+            zadc_vol = sitk.GetArrayFromImage(zadc_sitk)
+            # Normalizace pro zobrazení
+            if np.max(zadc_vol) != np.min(zadc_vol):
+                zadc_vol = (zadc_vol - np.min(zadc_vol)) / (np.max(zadc_vol) - np.min(zadc_vol))
+        except Exception as e:
+            print(f"Nelze načíst ZADC mapu: {e}")
+            zadc_vol = None
+    
+    if zadc_vol is None:
+        print("ZADC mapa není k dispozici, používám ADC mapu místo ZADC.")
+        try:
+            adc_path = result['input_paths'][0]
+            adc_sitk = sitk.ReadImage(adc_path)
+            zadc_vol = sitk.GetArrayFromImage(adc_sitk)
+            # Normalizace pro zobrazení
+            if np.max(zadc_vol) != np.min(zadc_vol):
+                zadc_vol = (zadc_vol - np.min(zadc_vol)) / (np.max(zadc_vol) - np.min(zadc_vol))
+        except Exception as e:
+            print(f"Nelze načíst ani ADC mapu: {e}")
+            return None
+    
+    # Vytvoření PDF s více řezy na stránku
+    with PdfPages(output_path) as pdf:
+        num_pages = math.ceil(num_slices / rows_per_page)
+        
+        for page in range(num_pages):
+            start_idx = page * rows_per_page
+            end_idx = min(start_idx + rows_per_page, num_slices)
+            slices_on_page = end_idx - start_idx
+            
+            # Vytvoření mřížky pro aktuální stránku - 3 sloupce: ZADC, LABEL, PRED
+            fig, axes = plt.subplots(slices_on_page, 3, figsize=(15, 2 * slices_on_page))
+            
+            # Zajištění, že axes je vždy 2D pole, i když je jen jeden řez
+            if slices_on_page == 1:
+                axes = np.array([axes])
+            
+            # Projděme řezy pro aktuální stránku
+            for i in range(slices_on_page):
+                slice_idx = start_idx + i
+                row = i
+                
+                # ZADC mapa
+                zadc_slice = zadc_vol[slice_idx, :, :]
+                axes[row, 0].imshow(zadc_slice, cmap='gray')
+                
+                # Pro první řez (slice_idx == 0) přidáme informaci o všech metrikách
+                if slice_idx == 0:
+                    axes[row, 0].set_title(f'ZADC (řez 1) - DICE: {dice:.4f}')
+                    axes[row, 1].set_title(f'LABEL (řez 1) - MASD: {masd:.4f}')
+                    axes[row, 2].set_title(f'PRED (řez 1) - NSD: {nsd:.4f}')
+                else:
+                    axes[row, 0].set_title(f'ZADC (řez {slice_idx+1})')
+                    axes[row, 1].set_title(f'LABEL (řez {slice_idx+1})')
+                    axes[row, 2].set_title(f'PRED (řez {slice_idx+1})')
+                
+                axes[row, 0].axis('off')
+                
+                # LABEL mapa (Ground Truth)
+                axes[row, 1].imshow(reference[slice_idx, :, :], cmap=label_cmap)
+                axes[row, 1].axis('off')
+                
+                # Predikce modelu
+                axes[row, 2].imshow(prediction[slice_idx, :, :], cmap=pred_cmap)
+                axes[row, 2].axis('off')
+            
+            # Přidáme hlavní titulek na stránku
+            if page == 0:
+                # Na první stránce zobrazíme všechny metriky v hlavním titulku
+                plt.suptitle(f'Pacient {patient_id} - Metriky: DICE: {dice:.4f}, MASD: {masd:.4f}, NSD: {nsd:.4f}', 
+                             fontsize=14)
+            else:
+                plt.suptitle(f'Validační vizualizace - pacient {patient_id}', fontsize=14)
+            
+            plt.tight_layout(rect=[0, 0, 1, 0.97])  # Rezervujeme místo pro hlavní titulek
+            pdf.savefig(fig)
+            plt.close(fig)
+    
+    print(f"PDF s validačními výsledky uloženo do: {output_path}")
+    return output_path
+
+
 def save_segmentation_with_metrics(result, output_dir, prefix="segmentation", save_pdf_comparison=False):
     """
     Uloží segmentaci a přidá hodnoty metrik do názvu souboru.
