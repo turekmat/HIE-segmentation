@@ -262,6 +262,31 @@ def run_cross_validation(config):
                 if config["use_wandb"]:
                     wandb.config.update({"patch_size": optimal_patch_size}, allow_val_change=True)
     
+    # Trénink modelu pro detekci malých lézí, pokud je povolen kaskádový přístup
+    if config.get("use_cascaded_approach", False) and not config.get("small_lesion_model_path", None):
+        print("\nKaskádový přístup je povolen, ale cesta k modelu pro malé léze není zadána.")
+        print("Zahajuji trénink modelu pro detekci malých lézí...")
+        
+        # Import funkce pro trénink modelu malých lézí
+        from src.training import train_small_lesion_model
+        
+        # Nastavení cesty pro ukládání modelu malých lézí
+        if not config.get("small_lesion_model_dir", None):
+            config["small_lesion_model_dir"] = os.path.join(config["model_dir"], "small_lesion")
+            os.makedirs(config["small_lesion_model_dir"], exist_ok=True)
+        
+        # Trénink modelu malých lézí
+        device = torch.device(config["device"])
+        small_model_path = train_small_lesion_model(config, device)
+        
+        # Uložení cesty k natrénovanému modelu do konfigurace
+        config["small_lesion_model_path"] = small_model_path
+        print(f"Model pro detekci malých lézí natrénován a uložen v: {small_model_path}")
+        
+        # Aktualizace konfigurace ve wandb, pokud je povoleno
+        if config["use_wandb"]:
+            wandb.config.update({"small_lesion_model_path": small_model_path}, allow_val_change=True)
+    
     # Vytvoření foldů nebo pevného rozdělení
     if config.get("fixed_split", False):
         print("Používám pevné rozdělení dat (80/20) místo k-fold cross-validace...")
@@ -679,7 +704,7 @@ def run_inference(config):
     # Určení device
     device = torch.device(config["device"])
     
-    # Vytvoření a načtení modelu
+    # Vytvoření a načtení hlavního modelu
     from src.models import create_model
     
     model = create_model(
@@ -692,7 +717,7 @@ def run_inference(config):
     model.load_state_dict(torch.load(config["model_path"], map_location=device))
     model.eval()
     
-    # Načtení expertního modelu, pokud se jedná o MoE inferenci
+    # Načtení expertního modelu pro MoE
     expert_model = None
     if config["inference_mode"] == "moe" and config["expert_model_path"]:
         expert_model = create_model(
@@ -703,6 +728,40 @@ def run_inference(config):
         ).to(device)
         expert_model.load_state_dict(torch.load(config["expert_model_path"], map_location=device))
         expert_model.eval()
+    
+    # Načtení modelu pro malé léze, pokud je požadován kaskádový přístup
+    small_lesion_model = None
+    if config.get("use_cascaded_approach", False):
+        # Import funkcí pro malé léze
+        from src.models import create_small_lesion_model
+        from src.inference import infer_full_volume_cascaded
+        
+        # Kontrola, zda je cesta k modelu pro malé léze zadána
+        if not config.get("small_lesion_model_path", None):
+            print("Varování: Kaskádový přístup vyžaduje model pro malé léze!")
+            print("Inicializuji nový model pro malé léze (bez předtrénovaných vah)...")
+            
+            # Vytvoření nového modelu pro malé léze
+            small_lesion_model = create_small_lesion_model(
+                model_name=config.get("small_lesion_model", "small_unet"),
+                in_channels=config["in_channels"],
+                out_channels=config["out_channels"]
+            ).to(device)
+        else:
+            # Načtení existujícího modelu pro malé léze
+            print(f"Načítám model pro malé léze z: {config['small_lesion_model_path']}")
+            small_lesion_model = create_small_lesion_model(
+                model_name=config.get("small_lesion_model", "small_unet"),
+                in_channels=config["in_channels"],
+                out_channels=config["out_channels"]
+            ).to(device)
+            
+            try:
+                small_lesion_model.load_state_dict(torch.load(config["small_lesion_model_path"], map_location=device))
+                small_lesion_model.eval()
+            except Exception as e:
+                print(f"Chyba při načítání modelu pro malé léze: {e}")
+                print("Inicializuji nový model pro malé léze (bez předtrénovaných vah)...")
     
     # Inference na všech souborech
     for idx, (adc_file, z_file) in enumerate(zip(adc_files, z_files)):
@@ -724,7 +783,27 @@ def run_inference(config):
         
         print(f"\nInference pro vzorek {idx+1}/{len(adc_files)}: {adc_file}")
         
-        if config["inference_mode"] == "moe" and expert_model is not None:
+        # Výběr metody inference
+        if config.get("use_cascaded_approach", False) and small_lesion_model is not None:
+            # Kaskádový přístup
+            print("Použití kaskádového přístupu s modelem pro malé léze...")
+            result = infer_full_volume_cascaded(
+                main_model=model,
+                small_lesion_model=small_lesion_model,
+                input_paths=[adc_path, z_path],
+                label_path=label_path,
+                device=device,
+                small_patch_size=config.get("small_lesion_patch_size", (16, 16, 16)),
+                small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                use_tta=config["use_tta"],
+                tta_angle_max=config["tta_angle_max"],
+                cascaded_mode=config.get("cascaded_mode", "combined"),
+                use_z_adc=config["in_channels"] > 1
+            )
+            
+            print(f"Použitý přístup: Kaskádový ({config.get('cascaded_mode', 'combined')})")
+            
+        elif config["inference_mode"] == "moe" and expert_model is not None:
             # MoE inference
             result = infer_full_volume_moe(
                 main_model=model,
@@ -794,6 +873,7 @@ def main():
     parser.add_argument("--model_name", type=str, help="Jméno modelu")
     parser.add_argument("--model_path", type=str, help="Cesta k uloženému modelu pro inference")
     parser.add_argument("--expert_model_path", type=str, help="Cesta k expertnímu modelu pro MoE inference")
+    parser.add_argument("--small_lesion_model_path", type=str, help="Cesta k modelu pro detekci malých lézí")
     parser.add_argument("--in_channels", type=int, help="Počet vstupních kanálů")
     parser.add_argument("--out_channels", type=int, help="Počet výstupních tříd")
     parser.add_argument("--drop_rate", type=float, help="Dropout rate")
@@ -873,6 +953,41 @@ def main():
     parser.add_argument("--wandb_project", type=str, help="Jméno projektu ve wandb")
     parser.add_argument("--wandb_run_name", type=str, help="Jméno běhu ve wandb")
     
+    # Přidané argumenty pro kaskádový přístup
+    parser.add_argument("--use_cascaded_approach", action="store_true", 
+                        help="Použít kaskádový přístup pro segmentaci malých lézí")
+    parser.add_argument("--small_lesion_model", type=str, choices=["unet", "nnunet", "deeplabv3plus", "small_unet", "simple_resunet"], default="small_unet",
+                        help="Model pro detekci malých lézí v kaskádovém přístupu")
+    parser.add_argument("--small_lesion_patch_size", type=int, nargs=3, default=[16, 16, 16],
+                        help="Velikost patche pro model malých lézí (3 hodnoty: výška, šířka, hloubka)")
+    parser.add_argument("--small_lesion_threshold", type=float, default=0.5,
+                        help="Prahová hodnota pro detekci malých lézí")
+    parser.add_argument("--cascaded_mode", type=str, choices=["roi_only", "combined"], default="combined",
+                        help="Režim kaskádového přístupu: 'roi_only' jen přidá ROI jako kanál, 'combined' kombinuje předpovědi")
+    
+    # Parametry pro trénování modelu malých lézí
+    parser.add_argument("--small_lesion_model_path", type=str, 
+                        help="Cesta k předtrénovanému modelu pro detekci malých lézí")
+    parser.add_argument("--small_lesion_model_dir", type=str, 
+                        help="Adresář pro ukládání modelů malých lézí")
+    parser.add_argument("--small_lesion_epochs", type=int, default=50,
+                        help="Počet epoch pro trénink modelu malých lézí")
+    parser.add_argument("--small_lesion_batch_size", type=int, default=16,
+                        help="Velikost dávky pro trénink modelu malých lézí")
+    parser.add_argument("--small_lesion_lr", type=float, 
+                        help="Learning rate pro trénink modelu malých lézí")
+    parser.add_argument("--small_lesion_patches_per_volume", type=int, default=200,
+                        help="Počet patchů extrahovaných z každého objemu pro trénink modelu malých lézí")
+    parser.add_argument("--small_lesion_foreground_ratio", type=float, default=0.8,
+                        help="Poměr patchů obsahujících lézi pro trénink modelu malých lézí (0-1)")
+    parser.add_argument("--small_lesion_max_voxels", type=int, default=50,
+                        help="Maximální počet voxelů pro klasifikaci léze jako 'malé'")
+    parser.add_argument("--small_lesion_loss_name", type=str,
+                        choices=["weighted_ce_dice", "log_cosh_dice", "focal_tversky", 
+                                 "log_hausdorff", "focal", "focal_dice_combo", 
+                                 "focal_ce_combo", "dice_focal", "weighted_ce"],
+                        help="Ztrátová funkce pro trénink modelu malých lézí")
+
     # Aktualizace konfigurace z argumentů
     args = parser.parse_args()
     config = parse_args_to_config(args, config)

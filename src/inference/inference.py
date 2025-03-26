@@ -553,4 +553,284 @@ def save_segmentation_with_metrics(result, output_dir, prefix="segmentation", sa
     if save_pdf_comparison and result.get('reference') is not None:
         save_slice_comparison_pdf(result, output_dir, prefix=f"{prefix}_comparison")
     
-    return output_path 
+    return output_path
+
+
+def extract_small_patches(image_data, patch_size, overlap=0.5):
+    """
+    Extrahuje malé patche z 3D obrazu s daným překryvem.
+    
+    Args:
+        image_data: Tensor se vstupním obrazem, tvar (C, D, H, W)
+        patch_size: Tuple s velikostí patche (pz, py, px)
+        overlap: Míra překryvu mezi patchi (0-1)
+        
+    Returns:
+        list: Seznam patchů se souřadnicemi [(patch, coords), ...]
+    """
+    # Získání rozměrů
+    c, d, h, w = image_data.shape
+    pz, py, px = patch_size
+    
+    # Výpočet kroku na základě překryvu
+    stride_z = int(pz * (1 - overlap))
+    stride_y = int(py * (1 - overlap))
+    stride_x = int(px * (1 - overlap))
+    
+    # Zajištění minimálního kroku
+    stride_z = max(stride_z, 1)
+    stride_y = max(stride_y, 1)
+    stride_x = max(stride_x, 1)
+    
+    # Extrakce patchů
+    patches = []
+    
+    for z in range(0, d-pz+1, stride_z):
+        for y in range(0, h-py+1, stride_y):
+            for x in range(0, w-px+1, stride_x):
+                # Extrakce patche
+                patch = image_data[:, z:z+pz, y:y+py, x:x+px]
+                coords = (z, y, x, z+pz, y+py, x+px)  # z_start, y_start, x_start, z_end, y_end, x_end
+                patches.append((patch, coords))
+    
+    return patches
+
+
+def reconstruct_from_patches(patches_with_preds, original_shape, out_channels=2):
+    """
+    Rekonstruuje obraz z predikcí jednotlivých patchů.
+    
+    Args:
+        patches_with_preds: Seznam patchů s predikcemi a souřadnicemi [(pred, coords), ...]
+        original_shape: Tvar původního obrazu (C, D, H, W)
+        out_channels: Počet výstupních kanálů v predikci
+        
+    Returns:
+        torch.Tensor: Rekonstruovaný obraz
+    """
+    _, d, h, w = original_shape
+    
+    # Inicializace výstupního obrazu a masky váh
+    output = torch.zeros((out_channels, d, h, w), dtype=torch.float32)
+    weight = torch.zeros((1, d, h, w), dtype=torch.float32)
+    
+    # Postupné přidávání predikcí patchů
+    for pred, coords in patches_with_preds:
+        z_start, y_start, x_start, z_end, y_end, x_end = coords
+        
+        # Přidání predikce do výstupu s váhou
+        output[:, z_start:z_end, y_start:y_end, x_start:x_end] += pred
+        weight[:, z_start:z_end, y_start:y_end, x_start:x_end] += 1.0
+    
+    # Normalizace výstupu podle váhy (průměrování překrývajících se částí)
+    weight = weight.clamp(min=1.0)  # Zajištění, že všechny hodnoty jsou >= 1
+    output = output / weight
+    
+    return output
+
+
+def infer_full_volume_cascaded(main_model, 
+                              small_lesion_model, 
+                              input_paths, 
+                              label_path=None, 
+                              device="cuda", 
+                              small_patch_size=(16, 16, 16),
+                              small_lesion_threshold=0.5,
+                              use_tta=True,
+                              tta_angle_max=3,
+                              cascaded_mode="combined",
+                              use_z_adc=True):
+    """
+    Provede kaskádovou inferenci pro celý 3D objem.
+    
+    Nejprve použije model pro detekci malých lézí na malých patchích,
+    poté použije hlavní model (SwinUNETR) pro finální segmentaci.
+    
+    Args:
+        main_model: Hlavní segmentační model (SwinUNETR)
+        small_lesion_model: Model pro detekci malých lézí
+        input_paths: Seznam cest ke vstupním volumům (např. [adc_path, zadc_path])
+        label_path: Cesta k ground truth masce (volitelné)
+        device: Zařízení pro výpočet
+        small_patch_size: Velikost patche pro detekci malých lézí
+        small_lesion_threshold: Prahová hodnota pro detekci malých lézí
+        use_tta: Zda použít Test-Time Augmentation
+        tta_angle_max: Maximální úhel pro rotace při TTA
+        cascaded_mode: Režim kaskády ("roi_only" nebo "combined")
+        use_z_adc: Zda používat Z-ADC modalitu (druhý vstupní kanál)
+
+    Returns:
+        dict: Výsledky inference, včetně predikce a metrik
+    """
+    main_model.eval()
+    small_lesion_model.eval()
+    tta_transforms = get_tta_transforms(angle_max=tta_angle_max) if use_tta else None
+    
+    # Načtení vstupních dat
+    volumes = []
+    
+    # Vždy načíst ADC mapu (první v seznamu)
+    adc_path = input_paths[0]
+    sitk_img = sitk.ReadImage(adc_path)
+    np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
+    volumes.append(np_vol)
+    
+    # Načíst Z-ADC mapu, pouze pokud se používá
+    if use_z_adc and len(input_paths) > 1:
+        zadc_path = input_paths[1]
+        try:
+            sitk_zadc = sitk.ReadImage(zadc_path)
+            zadc_np = sitk.GetArrayFromImage(sitk_zadc).astype(np.float32)
+            volumes.append(zadc_np)
+        except Exception as e:
+            print(f"Varování: Nelze načíst Z-ADC soubor {zadc_path}: {e}")
+            print("Inference bude provedena pouze s ADC mapou.")
+            use_z_adc = False  # Vypnutí Z-ADC, pokud soubor nelze načíst
+    
+    # Vytvoření vstupního tensoru
+    input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
+    input_tensor = torch.from_numpy(input_vol).unsqueeze(0).to(device).float()
+    
+    # Ground truth data (pokud jsou k dispozici)
+    lab_np = None
+    if label_path:
+        lab_sitk = sitk.ReadImage(label_path)
+        lab_np = sitk.GetArrayFromImage(lab_sitk)
+    
+    # 1. Krok: Detekce malých lézí pomocí malého modelu
+    print("1. Krok: Detekce malých lézí")
+    patches_with_coords = extract_small_patches(input_vol, small_patch_size, overlap=0.5)
+    patches_with_preds = []
+    
+    # Zpracování patchů po dávkách pro úsporu paměti
+    batch_size = 8
+    num_patches = len(patches_with_coords)
+    
+    for i in range(0, num_patches, batch_size):
+        batch_patches = patches_with_coords[i:i+batch_size]
+        batch_inputs = [p[0] for p in batch_patches]
+        batch_coords = [p[1] for p in batch_patches]
+        
+        # Převod na tensor
+        batch_tensor = torch.stack([torch.from_numpy(p) for p in batch_inputs]).to(device)
+        
+        # Inference
+        with torch.no_grad():
+            batch_preds = small_lesion_model(batch_tensor)
+            batch_probs = torch.nn.functional.softmax(batch_preds, dim=1)
+        
+        # Uložení predikcí
+        for j, coords in enumerate(batch_coords):
+            patches_with_preds.append((batch_probs[j].cpu(), coords))
+    
+    # Rekonstrukce mapy pravděpodobnosti malých lézí
+    small_lesion_prob_map = reconstruct_from_patches(
+        patches_with_preds, 
+        (input_vol.shape[0], input_vol.shape[1], input_vol.shape[2], input_vol.shape[3]),
+        out_channels=2
+    )
+    
+    # Převod mapy pravděpodobnosti na binární masku
+    small_lesion_mask = (small_lesion_prob_map[1] > small_lesion_threshold).float().unsqueeze(0)
+    
+    print(f"  Detekováno {small_lesion_mask.sum().item():.0f} voxelů malých lézí")
+    
+    # 2. Krok: Finální segmentace s hlavním modelem
+    print("2. Krok: Finální segmentace s hlavním modelem")
+    
+    # Kombinace vstupního obrazu s mapou malých lézí (přidání jako další kanál)
+    if cascaded_mode == "roi_only":
+        # Použijeme pouze ROI masku jako další vstupní kanál
+        augmented_input = torch.cat([
+            torch.from_numpy(input_vol), 
+            small_lesion_mask
+        ], dim=0).unsqueeze(0).to(device)
+        
+        # Inference s augmentovaným vstupem
+        with torch.no_grad():
+            if use_tta:
+                # TTA inference
+                avg_probs = 0
+                for transform in tta_transforms:
+                    aug_vol = apply_tta_transform(augmented_input.cpu().numpy()[0], transform)
+                    aug_tensor = torch.from_numpy(aug_vol).unsqueeze(0).to(device).float()
+                    
+                    pred_logits = main_model(aug_tensor)
+                    
+                    softmax = torch.nn.Softmax(dim=1)
+                    probs = softmax(pred_logits)
+                    probs_np = probs.cpu().numpy()[0]
+                    inv_probs = invert_tta_transform(probs_np, transform)
+                    avg_probs += inv_probs
+                
+                avg_probs /= len(tta_transforms)
+                final_pred = np.argmax(avg_probs, axis=0)
+            else:
+                # Standardní inference
+                pred_logits = main_model(augmented_input)
+                final_pred = torch.argmax(pred_logits, dim=1).cpu().numpy()[0]
+    
+    else:  # "combined" mode
+        # Provedeme standardní inferenci hlavním modelem
+        with torch.no_grad():
+            if use_tta:
+                # TTA inference hlavního modelu
+                avg_probs_main = 0
+                for transform in tta_transforms:
+                    aug_vol = apply_tta_transform(input_vol, transform)
+                    aug_tensor = torch.from_numpy(aug_vol).unsqueeze(0).to(device).float()
+                    
+                    pred_logits = main_model(aug_tensor)
+                    
+                    softmax = torch.nn.Softmax(dim=1)
+                    probs = softmax(pred_logits)
+                    probs_np = probs.cpu().numpy()[0]
+                    inv_probs = invert_tta_transform(probs_np, transform)
+                    avg_probs_main += inv_probs
+                
+                avg_probs_main /= len(tta_transforms)
+                main_pred = np.argmax(avg_probs_main, axis=0)
+            else:
+                # Standardní inference
+                pred_logits = main_model(input_tensor)
+                main_pred = torch.argmax(pred_logits, dim=1).cpu().numpy()[0]
+        
+        # Kombinace predikcí hlavního modelu a modelu malých lézí
+        small_lesion_binary = small_lesion_mask.squeeze(0)[0].cpu().numpy()
+        
+        # Pokud hlavní model detekoval lézi, ponecháme jeho predikci, 
+        # jinak zkontrolujeme, zda model malých lézí našel něco
+        combined_pred = np.copy(main_pred)
+        # Převedeme binární masku malých lézí na predikce (1 = léze)
+        small_lesion_pred = (small_lesion_binary > small_lesion_threshold).astype(np.int32)
+        
+        # Přidáme malé léze tam, kde hlavní model nic nenašel
+        # To znamená, že pokud hlavní model detekuje lézi (hodnota 1),
+        # ponecháme tuto hodnotu. Pokud hlavní model nedetekuje nic (hodnota 0),
+        # ale model malých lézí ano, nastavíme hodnotu na 1.
+        combined_pred = np.maximum(combined_pred, small_lesion_pred)
+        
+        final_pred = combined_pred
+    
+    # Výpočet metrik (pokud je k dispozici ground truth)
+    metrics = {}
+    if lab_np is not None:
+        metrics["dice"] = dice_coefficient(final_pred, lab_np)
+        metrics["masd"] = compute_masd(final_pred, lab_np, spacing=(1,1,1), sampling_ratio=0.5)
+        metrics["nsd"] = compute_nsd(final_pred, lab_np, spacing=(1,1,1), sampling_ratio=0.5)
+    
+    result = {
+        'prediction': final_pred,
+        'reference': lab_np,
+        'input_paths': input_paths,
+        'label_path': label_path,
+        'metrics': metrics,
+        'small_lesion_map': small_lesion_mask.squeeze(0).cpu().numpy()[0],
+        'cascaded_mode': cascaded_mode
+    }
+    
+    if label_path:
+        patient_id = extract_patient_id(label_path)
+        result['patient_id'] = patient_id
+    
+    return result 

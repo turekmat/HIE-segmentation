@@ -4,5 +4,7 @@ from .train import (
     setup_training,
     train_with_ohem,
     create_cv_folds,
-    log_metrics
+    log_metrics,
+    setup_small_lesion_training,
+    train_small_lesion_model
 )

@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 import numpy as np
 import wandb
 from monai.inferers import sliding_window_inference
+import os
 
 from ..models import create_model
 from ..loss import dice_coefficient
@@ -537,4 +538,213 @@ def log_metrics(metrics, epoch, fold_idx=None, lr=None, wandb_enabled=True):
         if lr is not None:
             wandb_log['lr'] = lr
         
-        wandb.log(wandb_log) 
+        wandb.log(wandb_log)
+
+
+def setup_small_lesion_training(config, dataset_train, dataset_val, device="cuda"):
+    """
+    Nastaví model pro trénování malých lézí a vrátí potřebné komponenty.
+    
+    Args:
+        config: Konfigurační slovník
+        dataset_train: Trénovací dataset
+        dataset_val: Validační dataset
+        device: Zařízení pro výpočet
+    
+    Returns:
+        tuple: (model, optimizer, loss_fn, scheduler, train_loader, val_loader)
+    """
+    from ..models import create_small_lesion_model
+    
+    # Vytvoření dataloaderů
+    train_loader = DataLoader(
+        dataset_train, 
+        batch_size=config.get("small_lesion_batch_size", 16),
+        shuffle=True
+    )
+    
+    # Pro validační loader používáme custom_collate_fn pro zpracování různých velikostí tensorů
+    val_loader = DataLoader(
+        dataset_val, 
+        batch_size=config.get("small_lesion_val_batch_size", 8),  
+        shuffle=False,
+        collate_fn=custom_collate_fn  # Použití vlastní collate_fn
+    )
+    
+    # Vytvoření modelu
+    model = create_small_lesion_model(
+        model_name=config.get("small_lesion_model", "small_unet"),
+        in_channels=config["in_channels"],
+        out_channels=config["out_channels"]
+    ).to(device)
+    
+    # Vytvoření ztrátové funkce
+    from ..loss import get_loss_function
+    
+    class_weights = None
+    if config["loss_name"] == "weighted_ce_dice":
+        class_weights = torch.tensor(
+            [config["bg_weight"], config["fg_weight"]],
+            device=device,
+            dtype=torch.float
+        )
+    
+    loss_fn = get_loss_function(
+        loss_name=config.get("small_lesion_loss_name", config["loss_name"]),
+        alpha=config["alpha"],
+        class_weights=class_weights,
+        focal_alpha=config.get("focal_alpha", 0.75),
+        focal_gamma=config.get("focal_gamma", 2.0),
+        alpha_mix=config.get("alpha_mix", 0.6),
+        out_channels=config["out_channels"]
+    )
+    
+    # Vytvoření optimizeru a scheduleru
+    small_lesion_lr = config.get("small_lesion_lr", config["lr"])
+    optimizer = optim.Adam(model.parameters(), lr=small_lesion_lr)
+    
+    scheduler = lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config.get("small_lesion_epochs", config["epochs"]),
+        eta_min=config["eta_min"]
+    )
+    
+    return model, optimizer, loss_fn, scheduler, train_loader, val_loader
+
+
+def train_small_lesion_model(config, device="cuda"):
+    """
+    Trénuje model pro detekci malých lézí.
+    
+    Args:
+        config: Konfigurační slovník
+        device: Zařízení pro výpočet
+        
+    Returns:
+        str: Cesta k natrénovanému modelu
+    """
+    print("\n========== TRÉNOVÁNÍ MODELU PRO DETEKCI MALÝCH LÉZÍ ==========")
+    
+    # Import potřebných funkcí
+    from ..data.dataset import SmallLesionPatchDataset
+    
+    # Vytvoření trénovacího a validačního datasetu
+    small_patch_size = config.get("small_lesion_patch_size", (16, 16, 16))
+    
+    # Kontrola, zda je velikost patche ve správném formátu
+    if isinstance(small_patch_size, list):
+        small_patch_size = tuple(small_patch_size)
+    
+    print(f"Vytváření datasetu malých lézí s velikostí patche {small_patch_size}")
+    
+    # Vytvoření datasetu pro trénink a validaci
+    # Používáme celý dataset pro trénink, ale s malými patchi
+    train_dataset = SmallLesionPatchDataset(
+        adc_folder=config["adc_folder"],
+        z_folder=config["z_folder"],
+        label_folder=config["label_folder"],
+        patch_size=small_patch_size,
+        patches_per_volume=config.get("small_lesion_patches_per_volume", 200),
+        foreground_ratio=config.get("small_lesion_foreground_ratio", 0.8),
+        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+        augment=config.get("use_augmentation", True),
+        use_z_adc=config["in_channels"] > 1,
+        seed=config["seed"]
+    )
+    
+    # Pro validaci oddělíme 20% dat z trénovacího datasetu
+    dataset_size = len(train_dataset)
+    
+    # Vytvoříme indexy pro rozdělení
+    indices = list(range(dataset_size))
+    np.random.seed(config["seed"])
+    np.random.shuffle(indices)
+    
+    split = int(np.floor(0.2 * dataset_size))
+    train_indices, val_indices = indices[split:], indices[:split]
+    
+    # Vytvoříme subsety
+    from torch.utils.data import Subset
+    
+    train_subset = Subset(train_dataset, train_indices)
+    val_subset = Subset(train_dataset, val_indices)
+    
+    print(f"Velikost trénovacího datasetu: {len(train_subset)} vzorků")
+    print(f"Velikost validačního datasetu: {len(val_subset)} vzorků")
+    
+    # Inicializace modelu a tréninkových komponent
+    model, optimizer, loss_fn, scheduler, train_loader, val_loader = setup_small_lesion_training(
+        config=config,
+        dataset_train=train_subset,
+        dataset_val=val_subset,
+        device=device
+    )
+    
+    # Počet trénovacích epoch
+    epochs = config.get("small_lesion_epochs", config["epochs"])
+    print(f"Počet trénovacích epoch: {epochs}")
+    
+    # Ukládání nejlepšího modelu
+    best_val_dice = 0.0
+    model_dir = config.get("small_lesion_model_dir", config["model_dir"])
+    os.makedirs(model_dir, exist_ok=True)
+    model_save_path = os.path.join(model_dir, "best_small_lesion_model.pth")
+    
+    # Tréninkový cyklus
+    for epoch in range(1, epochs + 1):
+        # Trénování jedné epochy
+        train_loss = train_one_epoch(
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            device=device
+        )
+        
+        # Validace
+        val_metrics = validate_one_epoch(
+            model=model,
+            loader=val_loader,
+            loss_fn=loss_fn,
+            device=device,
+            training_mode="patch",  # Vždy patch-based pro malé léze
+            compute_surface_metrics=config["compute_surface_metrics"],
+            USE_TTA=False,  # Pro zrychlení vypneme TTA při validaci
+            patch_size=small_patch_size,
+            sw_overlap=config.get("sw_overlap", 0.5)
+        )
+        
+        # Aktualizace learning rate
+        curr_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        
+        # Logování metrik
+        metrics = {
+            'small_lesion_train_loss': train_loss,
+            **{f"small_lesion_{k}": v for k, v in val_metrics.items()}
+        }
+        
+        log_metrics(
+            metrics=metrics,
+            epoch=epoch,
+            fold_idx=None,
+            lr=curr_lr,
+            wandb_enabled=config["use_wandb"]
+        )
+        
+        # Výpis metrik
+        dice_metric = val_metrics.get('val_dice', 0.0)
+        print(f"Epocha {epoch}/{epochs}: Ztráta = {train_loss:.4f}, DICE = {dice_metric:.4f}")
+        
+        # Ukládání nejlepšího modelu
+        if dice_metric > best_val_dice:
+            best_val_dice = dice_metric
+            
+            # Uložení modelu
+            print(f"Nalezen lepší model (DICE = {best_val_dice:.4f}), ukládám do {model_save_path}")
+            torch.save(model.state_dict(), model_save_path)
+    
+    print("\nTrénování modelu pro detekci malých lézí dokončeno.")
+    print(f"Nejlepší model uložen v: {model_save_path}")
+    
+    return model_save_path 
