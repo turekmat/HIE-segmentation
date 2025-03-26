@@ -96,6 +96,34 @@ class SmallUNet3D(nn.Module):
         return out
 
 
+class ResBlock(nn.Module):
+    """
+    Residuální blok, který řeší problém s lambda funkcemi při přenosu na GPU
+    """
+    def __init__(self, in_ch, out_ch):
+        super(ResBlock, self).__init__()
+        
+        self.layers = nn.Sequential(
+            nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1),
+            nn.BatchNorm3d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(out_ch, out_ch, kernel_size=3, padding=1),
+            nn.BatchNorm3d(out_ch)
+        )
+        
+        # Shortcut spojení pro přizpůsobení počtu kanálů
+        if in_ch != out_ch:
+            self.shortcut = nn.Sequential(
+                nn.Conv3d(in_ch, out_ch, kernel_size=1),
+                nn.BatchNorm3d(out_ch)
+            )
+        else:
+            self.shortcut = nn.Identity()
+    
+    def forward(self, x):
+        return F.relu(self.layers(x) + self.shortcut(x), inplace=True)
+
+
 class SimpleResUNet3D(nn.Module):
     """
     Jednoduchý 3D UNet s residuálními spojeními, optimalizovaný pro detekci malých lézí.
@@ -116,45 +144,24 @@ class SimpleResUNet3D(nn.Module):
         f = [base_channels, base_channels*2, base_channels*4]
         
         # Encoder
-        self.enc1 = self._make_res_block(in_channels, f[0])
+        self.enc1 = ResBlock(in_channels, f[0])
         self.pool1 = nn.MaxPool3d(kernel_size=2, stride=2)
         
-        self.enc2 = self._make_res_block(f[0], f[1])
+        self.enc2 = ResBlock(f[0], f[1])
         self.pool2 = nn.MaxPool3d(kernel_size=2, stride=2)
         
         # Bottleneck
-        self.bottleneck = self._make_res_block(f[1], f[2])
+        self.bottleneck = ResBlock(f[1], f[2])
         
         # Decoder
         self.upconv2 = nn.ConvTranspose3d(f[2], f[1], kernel_size=2, stride=2)
-        self.dec2 = self._make_res_block(f[1]*2, f[1])
+        self.dec2 = ResBlock(f[1]*2, f[1])
         
         self.upconv1 = nn.ConvTranspose3d(f[1], f[0], kernel_size=2, stride=2)
-        self.dec1 = self._make_res_block(f[0]*2, f[0])
+        self.dec1 = ResBlock(f[0]*2, f[0])
         
         # Výstupní vrstva
         self.out_conv = nn.Conv3d(f[0], out_channels, kernel_size=1)
-        
-    def _make_res_block(self, in_ch, out_ch):
-        """Vytvoří residuální blok s konvolucemi a shortcut spojením"""
-        layers = nn.Sequential(
-            nn.Conv3d(in_ch, out_ch, kernel_size=3, padding=1),
-            nn.BatchNorm3d(out_ch),
-            nn.ReLU(inplace=True),
-            nn.Conv3d(out_ch, out_ch, kernel_size=3, padding=1),
-            nn.BatchNorm3d(out_ch)
-        )
-        
-        # Shortcut spojení pro přizpůsobení počtu kanálů
-        if in_ch != out_ch:
-            shortcut = nn.Sequential(
-                nn.Conv3d(in_ch, out_ch, kernel_size=1),
-                nn.BatchNorm3d(out_ch)
-            )
-        else:
-            shortcut = nn.Identity()
-        
-        return lambda x: F.relu(layers(x) + shortcut(x), inplace=True)
     
     def forward(self, x):
         # Encoder
