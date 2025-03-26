@@ -956,37 +956,28 @@ def main():
     # Přidané argumenty pro kaskádový přístup
     parser.add_argument("--use_cascaded_approach", action="store_true", 
                         help="Použít kaskádový přístup pro segmentaci malých lézí")
-    parser.add_argument("--small_lesion_model", type=str, choices=["unet", "nnunet", "deeplabv3plus", "small_unet", "simple_resunet"], default="small_unet",
-                        help="Model pro detekci malých lézí v kaskádovém přístupu")
-    parser.add_argument("--small_lesion_patch_size", type=int, nargs=3, default=[16, 16, 16],
-                        help="Velikost patche pro model malých lézí (3 hodnoty: výška, šířka, hloubka)")
-    parser.add_argument("--small_lesion_threshold", type=float, default=0.5,
-                        help="Prahová hodnota pro detekci malých lézí")
     parser.add_argument("--cascaded_mode", type=str, choices=["roi_only", "combined"], default="combined",
                         help="Režim kaskádového přístupu: 'roi_only' jen přidá ROI jako kanál, 'combined' kombinuje předpovědi")
-    
-    # Parametry pro trénování modelu malých lézí
-    parser.add_argument("--small_lesion_model_path", type=str, 
-                        help="Cesta k předtrénovanému modelu pro detekci malých lézí")
-    parser.add_argument("--small_lesion_model_dir", type=str, 
-                        help="Adresář pro ukládání modelů malých lézí")
+    parser.add_argument("--small_lesion_model", type=str, choices=["unet", "nnunet", "deeplabv3plus", "small_unet", "simple_resunet"], 
+                        default="small_unet", help="Model pro detekci malých lézí")
+    parser.add_argument("--small_lesion_patch_size", nargs=3, type=int, default=[16, 16, 16],
+                        help="Velikost patche pro model malých lézí")
+    parser.add_argument("--small_lesion_threshold", type=float, default=0.5,
+                        help="Práh pro detekci malých lézí")
     parser.add_argument("--small_lesion_epochs", type=int, default=50,
-                        help="Počet epoch pro trénink modelu malých lézí")
+                        help="Počet epoch pro trénování modelu malých lézí")
     parser.add_argument("--small_lesion_batch_size", type=int, default=16,
-                        help="Velikost dávky pro trénink modelu malých lézí")
-    parser.add_argument("--small_lesion_lr", type=float, 
-                        help="Learning rate pro trénink modelu malých lézí")
+                        help="Velikost dávky pro trénování modelu malých lézí")
+    parser.add_argument("--small_lesion_lr", type=float, default=0.001,
+                        help="Learning rate pro trénování modelu malých lézí")
     parser.add_argument("--small_lesion_patches_per_volume", type=int, default=200,
-                        help="Počet patchů extrahovaných z každého objemu pro trénink modelu malých lézí")
+                        help="Počet patchů na objem pro trénování modelu malých lézí")
     parser.add_argument("--small_lesion_foreground_ratio", type=float, default=0.8,
-                        help="Poměr patchů obsahujících lézi pro trénink modelu malých lézí (0-1)")
+                        help="Poměr foreground voxelů v trénovacích patchích pro model malých lézí")
     parser.add_argument("--small_lesion_max_voxels", type=int, default=50,
                         help="Maximální počet voxelů pro klasifikaci léze jako 'malé'")
-    parser.add_argument("--small_lesion_loss_name", type=str,
-                        choices=["weighted_ce_dice", "log_cosh_dice", "focal_tversky", 
-                                 "log_hausdorff", "focal", "focal_dice_combo", 
-                                 "focal_ce_combo", "dice_focal", "weighted_ce"],
-                        help="Ztrátová funkce pro trénink modelu malých lézí")
+    parser.add_argument("--small_lesion_loss_name", type=str, default="focal_ce_combo",
+                        help="Ztrátová funkce pro trénování modelu malých lézí")
 
     # Aktualizace konfigurace z argumentů
     args = parser.parse_args()
