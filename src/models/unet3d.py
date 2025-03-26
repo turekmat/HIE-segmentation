@@ -40,22 +40,33 @@ class Up(nn.Module):
     """
     Upsampling a dvojitá konvoluce
     """
-    def __init__(self, in_channels, out_channels, bilinear=False):
+    def __init__(self, in_channels, mid_channels, out_channels, bilinear=False):
+        """
+        Args:
+            in_channels: Počet kanálů prvního vstupu (z bottlenecku)
+            mid_channels: Počet kanálů druhého vstupu (ze skip connection)
+            out_channels: Počet výstupních kanálů
+            bilinear: Použít bilineární interpolaci místo transponované konvoluce
+        """
         super(Up, self).__init__()
 
         # Pokud bilinear=True, použije se bilineární interpolace místo transponované konvoluce
         if bilinear:
             self.up = nn.Upsample(scale_factor=2, mode='trilinear', align_corners=True)
         else:
-            self.up = nn.ConvTranspose3d(in_channels // 2, in_channels // 2, 
+            # Transponovaná konvoluce pro upsampling
+            self.up = nn.ConvTranspose3d(in_channels, in_channels // 2, 
                                          kernel_size=2, stride=2)
 
-        self.conv = DoubleConv(in_channels, out_channels)
+        # Po spojení bottleneck featury (in_channels//2) a skip featury (mid_channels)
+        self.conv = DoubleConv(in_channels // 2 + mid_channels, out_channels)
 
     def forward(self, x1, x2):
+        # x1 je z nižší úrovně (bottleneck)
+        # x2 je ze skip connection (vyšší úroveň)
         x1 = self.up(x1)
         
-        # Výpočet paddingu
+        # Výpočet paddingu pro zachování správných rozměrů
         diffZ = x2.size()[2] - x1.size()[2]
         diffY = x2.size()[3] - x1.size()[3]
         diffX = x2.size()[4] - x1.size()[4]
@@ -66,7 +77,7 @@ class Up(nn.Module):
             diffZ // 2, diffZ - diffZ // 2
         ])
         
-        # Concatenate podél kanálové osy
+        # Spojení podél kanálové osy
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
@@ -100,24 +111,32 @@ class UNet3D(nn.Module):
         self.out_channels = out_channels
         self.bilinear = bilinear
         
+        # Základní počet kanálů a faktoru downsamplingu
+        f = [base_channels, base_channels*2, base_channels*4, base_channels*8, base_channels*16]
+        factor = 2 if bilinear else 1
+        
         # Encodér
-        self.inc = DoubleConv(in_channels, base_channels)
-        self.down1 = Down(base_channels, base_channels * 2)
-        self.down2 = Down(base_channels * 2, base_channels * 4)
-        self.down3 = Down(base_channels * 4, base_channels * 8)
+        self.inc = DoubleConv(in_channels, f[0])
+        self.down1 = Down(f[0], f[1])
+        self.down2 = Down(f[1], f[2])
+        self.down3 = Down(f[2], f[3])
         
         # Bottleneck
-        factor = 2 if bilinear else 1
-        self.down4 = Down(base_channels * 8, base_channels * 16 // factor)
+        if bilinear:
+            self.down4 = Down(f[3], f[4] // factor)
+            bottleneck_channels = f[4] // factor
+        else:
+            self.down4 = Down(f[3], f[4])
+            bottleneck_channels = f[4]
         
-        # Dekodér
-        self.up1 = Up(base_channels * 16, base_channels * 8 // factor, bilinear)
-        self.up2 = Up(base_channels * 8, base_channels * 4 // factor, bilinear)
-        self.up3 = Up(base_channels * 4, base_channels * 2 // factor, bilinear)
-        self.up4 = Up(base_channels * 2, base_channels, bilinear)
+        # Dekodér - upraveny počty kanálů pro správnou inicializaci
+        self.up1 = Up(bottleneck_channels, f[3], f[3], bilinear)
+        self.up2 = Up(f[3], f[2], f[2], bilinear)
+        self.up3 = Up(f[2], f[1], f[1], bilinear)
+        self.up4 = Up(f[1], f[0], f[0], bilinear)
         
         # Výstupní vrstva
-        self.outc = OutConv(base_channels, out_channels)
+        self.outc = OutConv(f[0], out_channels)
 
     def forward(self, x):
         # Encoder
