@@ -7,7 +7,7 @@ def create_model(model_name="SwinUNETR", in_channels=2, out_channels=2, drop_rat
     Vytvoří model podle zadaného jména
     
     Args:
-        model_name (str): Jméno modelu (SwinUNETR, AttentionUNet, UNet3Plus)
+        model_name (str): Jméno modelu (SwinUNETR, AttentionUNet, UNet3Plus, UNet3D)
         in_channels (int): Počet vstupních kanálů
         out_channels (int): Počet výstupních kanálů
         drop_rate (float): Dropout rate pro SwinUNETR
@@ -37,6 +37,14 @@ def create_model(model_name="SwinUNETR", in_channels=2, out_channels=2, drop_rat
             in_channels=in_channels,
             out_channels=out_channels,
             base_channels=64
+        )
+    elif model_name == "UNet3D":
+        from .unet3d import UNet3D
+        model = UNet3D(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            base_channels=32,
+            bilinear=False
         )
     else:
         raise ValueError(f"Unsupported model_name: {model_name}")
