@@ -323,7 +323,8 @@ class SmallLesionPatchDataset(Dataset):
         small_lesion_max_voxels=50,
         augment=True,
         use_z_adc=True,
-        seed=42
+        seed=42,
+        specific_files=None
     ):
         """
         Args:
@@ -337,6 +338,8 @@ class SmallLesionPatchDataset(Dataset):
             augment: Zda provádět augmentaci dat
             use_z_adc: Zda používat Z-ADC snímky jako druhý kanál
             seed: Seed pro reprodukovatelnost
+            specific_files: Slovník obsahující seznamy konkrétních souborů, které mají být použity
+                           {'adc_files': [...], 'z_files': [...], 'lab_files': [...]}
         """
         super().__init__()
         self.adc_folder = adc_folder
@@ -354,9 +357,18 @@ class SmallLesionPatchDataset(Dataset):
         np.random.seed(seed)
         
         # Načtení seznamu souborů
-        self.adc_files = sorted([f for f in os.listdir(adc_folder) if f.endswith(('.mha', '.nii', '.nii.gz'))])
-        self.z_files = sorted([f for f in os.listdir(z_folder) if f.endswith(('.mha', '.nii', '.nii.gz'))])
-        self.lab_files = sorted([f for f in os.listdir(label_folder) if f.endswith(('.mha', '.nii', '.nii.gz'))])
+        if specific_files is None:
+            # Standardní načtení všech souborů
+            self.adc_files = sorted([f for f in os.listdir(adc_folder) if f.endswith(('.mha', '.nii', '.nii.gz'))])
+            self.lab_files = sorted([f for f in os.listdir(label_folder) if f.endswith(('.mha', '.nii', '.nii.gz'))])
+            if use_z_adc:
+                self.z_files = sorted([f for f in os.listdir(z_folder) if f.endswith(('.mha', '.nii', '.nii.gz'))])
+        else:
+            # Použití konkrétních souborů
+            self.adc_files = specific_files['adc_files']
+            self.lab_files = specific_files['lab_files']
+            if use_z_adc:
+                self.z_files = specific_files['z_files']
         
         # Kontrola, zda počty souborů souhlasí
         assert len(self.adc_files) == len(self.lab_files), "Počet ADC a label souborů nesouhlasí"

@@ -1,13 +1,15 @@
 import os
 import sys
 import argparse
-import torch
-import wandb
-import random
+import time
 import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+import SimpleITK as sitk
 import pickle
-from pathlib import Path
-from torch.utils.data import Subset
+from datetime import datetime
+from torch.utils.data import DataLoader, Subset
 
 # Automatické přihlášení k Weights & Biases pomocí Kaggle secrets (pokud běží v Kaggle)
 if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
@@ -42,6 +44,8 @@ from src.inference.inference import (
     infer_full_volume_moe,
     save_segmentation_with_metrics
 )
+from src.models import create_model
+from src.utils import set_random_seed, setup_wandb
 
 def set_seed(seed):
     """Nastavení fixního seedu pro reprodukovatelnost"""
@@ -262,31 +266,6 @@ def run_cross_validation(config):
                 if config["use_wandb"]:
                     wandb.config.update({"patch_size": optimal_patch_size}, allow_val_change=True)
     
-    # Trénink modelu pro detekci malých lézí, pokud je povolen kaskádový přístup
-    if config.get("use_cascaded_approach", False) and not config.get("small_lesion_model_path", None):
-        print("\nKaskádový přístup je povolen, ale cesta k modelu pro malé léze není zadána.")
-        print("Zahajuji trénink modelu pro detekci malých lézí...")
-        
-        # Import funkce pro trénink modelu malých lézí
-        from src.training import train_small_lesion_model
-        
-        # Nastavení cesty pro ukládání modelu malých lézí
-        if not config.get("small_lesion_model_dir", None):
-            config["small_lesion_model_dir"] = os.path.join(config["model_dir"], "small_lesion")
-            os.makedirs(config["small_lesion_model_dir"], exist_ok=True)
-        
-        # Trénink modelu malých lézí
-        device = torch.device(config["device"])
-        small_model_path = train_small_lesion_model(config, device)
-        
-        # Uložení cesty k natrénovanému modelu do konfigurace
-        config["small_lesion_model_path"] = small_model_path
-        print(f"Model pro detekci malých lézí natrénován a uložen v: {small_model_path}")
-        
-        # Aktualizace konfigurace ve wandb, pokud je povoleno
-        if config["use_wandb"]:
-            wandb.config.update({"small_lesion_model_path": small_model_path}, allow_val_change=True)
-    
     # Vytvoření foldů nebo pevného rozdělení
     if config.get("fixed_split", False):
         print("Používám pevné rozdělení dat (80/20) místo k-fold cross-validace...")
@@ -376,6 +355,9 @@ def run_cross_validation(config):
     # Pro fixní rozdělení bude jen jeden "fold"
     num_folds = 1 if config.get("fixed_split", False) else config["n_folds"]
     
+    # Uchováváme cesty ke všem natrénovaným modelům pro malé léze
+    small_lesion_model_paths = {}
+    
     for fold_idx, (train_indices, val_indices) in enumerate(folds):
         print(f"\n========== {'FOLD ' + str(fold_idx+1) + '/' + str(num_folds) if not config.get('fixed_split', False) else 'PEVNÉ ROZDĚLENÍ'} ==========")
         
@@ -446,6 +428,49 @@ def run_cross_validation(config):
             
             # Použití indexů pomocí IndexedDatasetWrapper
             val_dataset = Subset(val_dataset_full, val_indices)
+        
+        # Trénink modelu pro detekci malých lézí pro tento fold, pokud je povolen kaskádový přístup
+        if config.get("use_cascaded_approach", False):
+            print(f"\nKaskádový přístup je povolen pro fold {fold_idx+1}")
+            
+            # Import funkce pro trénink modelu malých lézí
+            from src.training import train_small_lesion_model, train_small_lesion_model_with_indices
+            
+            # Nastavení cesty pro ukládání modelu malých lézí pro tento fold
+            small_lesion_model_dir = os.path.join(config.get("model_dir", config["output_dir"]), "small_lesion")
+            os.makedirs(small_lesion_model_dir, exist_ok=True)
+            
+            # Určení cesty k souboru modelu pro tento fold
+            small_lesion_model_path = os.path.join(small_lesion_model_dir, f"best_small_lesion_model_fold{fold_idx+1}.pth")
+            
+            # Kontrola, zda je soubor s modelem pro tento fold už trénovaný
+            if os.path.exists(small_lesion_model_path) and not config.get("retrain_small_lesion_model", False):
+                print(f"Načítám existující model pro malé léze pro fold {fold_idx+1} z: {small_lesion_model_path}")
+            else:
+                print(f"Trénuji model pro malé léze pro fold {fold_idx+1}...")
+                
+                # Trénink modelu malých lézí pouze na trénovacích datech tohoto foldu
+                small_model_path = train_small_lesion_model_with_indices(
+                    config, 
+                    train_indices, 
+                    fold_idx,
+                    device=device
+                )
+                
+                # Aktualizace cesty k modelu
+                small_lesion_model_path = small_model_path
+                
+                print(f"Model pro malé léze (fold {fold_idx+1}) natrénován a uložen v: {small_lesion_model_path}")
+            
+            # Uložení cesty k modelu pro tento fold
+            small_lesion_model_paths[fold_idx] = small_lesion_model_path
+            
+            # Nastavení cesty k modelu malých lézí v konfiguraci pro tento fold
+            config["small_lesion_model_path"] = small_lesion_model_path
+            
+            # Aktualizace konfigurace ve wandb, pokud je povoleno
+            if config["use_wandb"]:
+                wandb.config.update({"small_lesion_model_path": small_lesion_model_path}, allow_val_change=True)
         
         # Nastavení trénování
         model, optimizer, loss_fn, scheduler, train_loader, val_loader = setup_training(
@@ -549,6 +574,19 @@ def run_cross_validation(config):
                         print(f"  Nejlepší model nenalezen, používám aktuální model z epochy {epoch}")
                         using_best_model = False
                     
+                    # Kontrola, zda se má použít kaskádový přístup
+                    if config.get("use_cascaded_approach", False):
+                        # Ujistíme se, že máme cestu k modelu pro malé léze pro tento fold
+                        if fold_idx in small_lesion_model_paths:
+                            small_lesion_model_path = small_lesion_model_paths[fold_idx]
+                            print(f"  Používám model pro malé léze pro fold {fold_idx+1} z: {small_lesion_model_path}")
+                            config["small_lesion_model_path"] = small_lesion_model_path
+                        else:
+                            print(f"  Model pro malé léze pro fold {fold_idx+1} nenalezen! Používám výchozí model.")
+                    
+                    # Načteme data validačního datasetu do paměti
+                    val_data = []
+                    
                     # Zpracujeme všechny validační vzorky
                     for val_idx_pos, val_idx in enumerate(val_indices):
                         print(f"  Vzorek {val_idx_pos+1}/{len(val_indices)} (index {val_idx})")
@@ -640,128 +678,194 @@ def run_cross_validation(config):
 
 def run_inference(config):
     """
-    Spustí inferenci na zadaných datech.
-    
-    Args:
-        config: Konfigurační slovník s parametry
+    Provede inferenci na testovacích datech.
     """
-    # Kontrola, zda složky existují
-    for folder in [config["adc_folder"], config["z_folder"]]:
-        if not os.path.exists(folder):
-            print(f"Chyba: Složka {folder} neexistuje!")
-            sys.exit(1)
+    print("\n========== INFERENCE ==========")
     
-    # Provedení preprocessingu, pokud je požadováno
-    if config.get("preprocessing", False):
-        from src.data.preprocessing import prepare_preprocessed_data
+    # Kontrola, zda jsou všechny potřebné cesty zadány
+    if not all(config.get(key) for key in ["adc_folder", "model_name", "output_dir"]):
+        print("Chybí povinné parametry pro inferenci!")
+        return
+    
+    # Pokud je zadán model pro každý fold, použijeme ensemble
+    use_ensemble = False
+    if config.get("use_ensemble", False) and config.get("n_folds", 0) > 1:
+        # Kontrola, zda existují modely pro všechny foldy
+        missing_models = False
+        model_paths = []
+        small_lesion_model_paths = []  # Přidaná podpora pro ensemble malých lézí
         
-        # Nastavení cest pro předzpracovaná data
-        preprocessed_adc = config.get("preprocessed_adc_folder", os.path.join(config["output_dir"], "preprocessed/1ADC_ss"))
-        preprocessed_z = config.get("preprocessed_z_folder", os.path.join(config["output_dir"], "preprocessed/2Z_ADC"))
-        preprocessed_label = None
-        if config.get("label_folder"):
-            preprocessed_label = config.get("preprocessed_label_folder", os.path.join(config["output_dir"], "preprocessed/3LABEL"))
+        for fold_idx in range(config["n_folds"]):
+            model_path = os.path.join(config["model_dir"], f"best_model_fold{fold_idx+1}.pth")
+            
+            # Cesta k modelu pro malé léze
+            if config.get("use_cascaded_approach", False):
+                small_lesion_model_dir = os.path.join(config.get("model_dir", config["output_dir"]), "small_lesion")
+                small_lesion_path = os.path.join(small_lesion_model_dir, f"best_small_lesion_model_fold{fold_idx+1}.pth")
+                
+                if os.path.exists(small_lesion_path):
+                    small_lesion_model_paths.append(small_lesion_path)
+                else:
+                    print(f"Warning: Model pro malé léze pro fold {fold_idx+1} nenalezen v: {small_lesion_path}")
+            
+            if not os.path.exists(model_path):
+                print(f"Warning: Model pro fold {fold_idx+1} nenalezen v: {model_path}")
+                missing_models = True
+            else:
+                model_paths.append(model_path)
         
-        # Spuštění preprocessingu
-        print("\nProvádím preprocessing dat...")
-        prepare_preprocessed_data(
-            adc_folder=config["adc_folder"],
-            z_folder=config["z_folder"],
-            label_folder=config.get("label_folder"),
-            output_adc=preprocessed_adc,
-            output_z=preprocessed_z,
-            output_label=preprocessed_label if preprocessed_label else None,
-            normalize=config.get("use_normalization", False),
-            allow_normalize_spacing=config.get("allow_normalize_spacing", False)
-        )
-        
-        # Aktualizace cest na předzpracovaná data
-        config["adc_folder"] = preprocessed_adc
-        config["z_folder"] = preprocessed_z
-        if config.get("label_folder") and preprocessed_label:
-            config["label_folder"] = preprocessed_label
-        
-        print("Preprocessing dokončen. Používám předzpracovaná data pro inferenci.\n")
+        if missing_models:
+            print("Některé modely pro ensemble chybí. Použiji pouze model z prvního foldu.")
+            use_ensemble = False
+        else:
+            print(f"Použiji ensemble {len(model_paths)} modelů.")
+            if config.get("use_cascaded_approach", False) and small_lesion_model_paths:
+                print(f"Použiji ensemble {len(small_lesion_model_paths)} modelů pro malé léze.")
+            use_ensemble = True
     
-    # Kontrola, zda existuje cesta k modelu
-    if not os.path.exists(config["model_path"]):
-        print(f"Chyba: Model {config['model_path']} neexistuje!")
-        sys.exit(1)
-    
-    # Načtení seznamu souborů
-    adc_files = sorted([f for f in os.listdir(config["adc_folder"]) 
-                        if f.endswith(".mha") or f.endswith(".nii") or f.endswith(".nii.gz")])
-    z_files = sorted([f for f in os.listdir(config["z_folder"]) 
-                      if f.endswith(".mha") or f.endswith(".nii") or f.endswith(".nii.gz")])
-    
-    if len(adc_files) != len(z_files):
-        print("Chyba: Počet ADC a Z-ADC souborů se neshoduje!")
-        sys.exit(1)
-    
-    # Vytvoření výstupního adresáře
+    # Vytvoření adresáře pro výstupy
     os.makedirs(config["output_dir"], exist_ok=True)
     
-    # Určení device
+    # Načtení seznamu souborů pro inferenci
+    adc_files = sorted([f for f in os.listdir(config["adc_folder"]) if f.endswith(('.mha', '.nii', '.nii.gz'))])
+    
+    # Pokud máme Z-ADC, načteme i je
+    if config["in_channels"] > 1:
+        z_files = sorted([f for f in os.listdir(config["z_folder"]) if f.endswith(('.mha', '.nii', '.nii.gz'))])
+        assert len(adc_files) == len(z_files), "Počet ADC a Z-ADC souborů nesouhlasí!"
+    
+    # Ground truth, pokud je k dispozici
+    if config.get("label_folder", None):
+        label_files = sorted([f for f in os.listdir(config["label_folder"]) if f.endswith(('.mha', '.nii', '.nii.gz'))])
+        assert len(adc_files) == len(label_files), "Počet ADC a label souborů nesouhlasí!"
+    else:
+        label_files = [None] * len(adc_files)
+    
+    print(f"Celkem {len(adc_files)} souborů pro inferenci.")
+    
+    # Nastavení device
     device = torch.device(config["device"])
     
-    # Vytvoření a načtení hlavního modelu
-    from src.models import create_model
-    
-    model = create_model(
-        model_name=config["model_name"],
-        in_channels=config["in_channels"],
-        out_channels=config["out_channels"],
-        drop_rate=config.get("drop_rate", 0.15)
-    ).to(device)
-    
-    model.load_state_dict(torch.load(config["model_path"], map_location=device))
-    model.eval()
-    
-    # Načtení expertního modelu pro MoE
-    expert_model = None
-    if config["inference_mode"] == "moe" and config["expert_model_path"]:
-        expert_model = create_model(
-            model_name=config["expert_model_name"] or config["model_name"],
+    # Vytvoření a přesunutí modelu na GPU
+    if use_ensemble:
+        # Pro ensemble vytvoříme seznam modelů
+        models = []
+        for model_path in model_paths:
+            model = create_model(
+                model_name=config["model_name"],
+                pretrained=False,
+                in_channels=config["in_channels"],
+                out_channels=config["out_channels"],
+                img_size=config["img_size"],
+                use_checkpointing=config.get("use_checkpointing", False),
+                drop_rate=config.get("drop_rate", 0.0),
+                attn_drop_rate=config.get("attn_drop_rate", 0.0),
+                dropout_path_rate=config.get("dropout_path_rate", 0.0),
+                apply_sigmoid=config.get("apply_sigmoid", False),
+                swin_layers_per_block=config.get("swin_layers_per_block", None),
+                swin_window_size=config.get("swin_window_size", None)
+            ).to(device)
+            
+            # Načtení vah
+            model.load_state_dict(torch.load(model_path, map_location=device))
+            model.eval()
+            models.append(model)
+        
+        main_model = models[0]  # Pro kompatibilitu s kaskádovým přístupem
+    else:
+        # Pro jediný model
+        main_model = create_model(
+            model_name=config["model_name"],
+            pretrained=False,
             in_channels=config["in_channels"],
             out_channels=config["out_channels"],
-            drop_rate=config.get("drop_rate", 0.15)
+            img_size=config["img_size"],
+            use_checkpointing=config.get("use_checkpointing", False),
+            drop_rate=config.get("drop_rate", 0.0),
+            attn_drop_rate=config.get("attn_drop_rate", 0.0),
+            dropout_path_rate=config.get("dropout_path_rate", 0.0),
+            apply_sigmoid=config.get("apply_sigmoid", False),
+            swin_layers_per_block=config.get("swin_layers_per_block", None),
+            swin_window_size=config.get("swin_window_size", None)
         ).to(device)
-        expert_model.load_state_dict(torch.load(config["expert_model_path"], map_location=device))
-        expert_model.eval()
+        
+        # Načtení vah
+        if config.get("model_weights", None):
+            print(f"Načítám váhy modelu z: {config['model_weights']}")
+            main_model.load_state_dict(torch.load(config["model_weights"], map_location=device))
+        
+        main_model.eval()
     
-    # Načtení modelu pro malé léze, pokud je požadován kaskádový přístup
-    small_lesion_model = None
     if config.get("use_cascaded_approach", False):
         # Import funkcí pro malé léze
         from src.models import create_small_lesion_model
         from src.inference import infer_full_volume_cascaded
         
-        # Kontrola, zda je cesta k modelu pro malé léze zadána
-        if not config.get("small_lesion_model_path", None):
+        # Kontrola, zda je cesta k modelu pro malé léze zadána nebo máme ensemble
+        small_lesion_model = None
+        small_lesion_models = []  # Pro ensemble
+        
+        if use_ensemble and small_lesion_model_paths:
+            # Vytvoření ensemble modelů pro malé léze
+            for sl_path in small_lesion_model_paths:
+                sl_model = create_small_lesion_model(
+                    model_name=config.get("small_lesion_model", "small_unet"),
+                    in_channels=config["in_channels"],
+                    out_channels=config["out_channels"]
+                ).to(device)
+                
+                try:
+                    sl_model.load_state_dict(torch.load(sl_path, map_location=device))
+                    sl_model.eval()
+                    small_lesion_models.append(sl_model)
+                except Exception as e:
+                    print(f"Chyba při načítání modelu pro malé léze {sl_path}: {e}")
+            
+            # Pokud máme alespoň jeden model, použijeme první jako referenční
+            if small_lesion_models:
+                print(f"Načteno {len(small_lesion_models)} modelů pro malé léze pro ensemble")
+                small_lesion_model = small_lesion_models[0]  # Referenční model pro kompatibilitu
+            else:
+                print("Nepodařilo se načíst žádný model pro malé léze pro ensemble")
+        elif not config.get("small_lesion_model_path", None):
             print("Varování: Kaskádový přístup vyžaduje model pro malé léze!")
-            print("Inicializuji nový model pro malé léze (bez předtrénovaných vah)...")
             
-            # Vytvoření nového modelu pro malé léze
-            small_lesion_model = create_small_lesion_model(
-                model_name=config.get("small_lesion_model", "small_unet"),
-                in_channels=config["in_channels"],
-                out_channels=config["out_channels"]
-            ).to(device)
-        else:
-            # Načtení existujícího modelu pro malé léze
-            print(f"Načítám model pro malé léze z: {config['small_lesion_model_path']}")
-            small_lesion_model = create_small_lesion_model(
-                model_name=config.get("small_lesion_model", "small_unet"),
-                in_channels=config["in_channels"],
-                out_channels=config["out_channels"]
-            ).to(device)
-            
-            try:
-                small_lesion_model.load_state_dict(torch.load(config["small_lesion_model_path"], map_location=device))
-                small_lesion_model.eval()
-            except Exception as e:
-                print(f"Chyba při načítání modelu pro malé léze: {e}")
+            # Pokud máme k dispozici modely pro jednotlivé foldy, pokusíme se najít model pro první fold
+            if config.get("use_ensemble", False) and config.get("n_folds", 0) > 1:
+                # Zkusíme najít model pro první fold
+                small_lesion_model_dir = os.path.join(config.get("model_dir", config["output_dir"]), "small_lesion")
+                small_lesion_model_path = os.path.join(small_lesion_model_dir, "best_small_lesion_model_fold1.pth")
+                
+                if os.path.exists(small_lesion_model_path):
+                    print(f"Nalezen model pro malé léze pro první fold: {small_lesion_model_path}")
+                    config["small_lesion_model_path"] = small_lesion_model_path
+                else:
+                    print("Inicializuji nový model pro malé léze (bez předtrénovaných vah)...")
+            else:
                 print("Inicializuji nový model pro malé léze (bez předtrénovaných vah)...")
+            
+            # Vytvoření nového modelu pro malé léze, pokud stále nemáme cestu
+            if not config.get("small_lesion_model_path", None):
+                small_lesion_model = create_small_lesion_model(
+                    model_name=config.get("small_lesion_model", "small_unet"),
+                    in_channels=config["in_channels"],
+                    out_channels=config["out_channels"]
+                ).to(device)
+            else:
+                # Načtení existujícího modelu pro malé léze
+                print(f"Načítám model pro malé léze z: {config['small_lesion_model_path']}")
+                small_lesion_model = create_small_lesion_model(
+                    model_name=config.get("small_lesion_model", "small_unet"),
+                    in_channels=config["in_channels"],
+                    out_channels=config["out_channels"]
+                ).to(device)
+                
+                try:
+                    small_lesion_model.load_state_dict(torch.load(config["small_lesion_model_path"], map_location=device))
+                    small_lesion_model.eval()
+                except Exception as e:
+                    print(f"Chyba při načítání modelu pro malé léze: {e}")
+                    print("Inicializuji nový model pro malé léze (bez předtrénovaných vah)...")
     
     # Inference na všech souborech
     for idx, (adc_file, z_file) in enumerate(zip(adc_files, z_files)):
@@ -787,26 +891,54 @@ def run_inference(config):
         if config.get("use_cascaded_approach", False) and small_lesion_model is not None:
             # Kaskádový přístup
             print("Použití kaskádového přístupu s modelem pro malé léze...")
-            result = infer_full_volume_cascaded(
-                main_model=model,
-                small_lesion_model=small_lesion_model,
-                input_paths=[adc_path, z_path],
-                label_path=label_path,
-                device=device,
-                small_patch_size=config.get("small_lesion_patch_size", (16, 16, 16)),
-                small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
-                use_tta=config["use_tta"],
-                tta_angle_max=config["tta_angle_max"],
-                cascaded_mode=config.get("cascaded_mode", "combined"),
-                use_z_adc=config["in_channels"] > 1
-            )
             
-            print(f"Použitý přístup: Kaskádový ({config.get('cascaded_mode', 'combined')})")
-            
+            # Určení, který model pro malé léze použít
+            if use_ensemble and small_lesion_models:
+                # Provádíme inferenci pro každý model v ensemblu a průměrujeme výsledky
+                print("Provádím ensemble inferenci s modely pro malé léze...")
+                
+                predictions = []
+                
+                for i, (main_m, small_m) in enumerate(zip(models, small_lesion_models)):
+                    print(f"Ensemble model {i+1}/{len(models)}...")
+                    result = infer_full_volume_cascaded(
+                        main_model=main_m,
+                        small_lesion_model=small_m,
+                        input_paths=[adc_path, z_path],
+                        label_path=label_path,
+                        device=device,
+                        small_patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
+                        small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                        use_tta=config.get("use_tta", True),
+                        tta_angle_max=config.get("tta_angle_max", 3),
+                        cascaded_mode=config.get("cascaded_mode", "combined"),
+                        use_z_adc=config["in_channels"] > 1
+                    )
+                    predictions.append(result)
+                
+                # Průměrování predikcí ensemblu
+                ensemble_pred = np.mean([pred > 0.5 for pred in predictions], axis=0).astype(np.int32)
+                result = ensemble_pred  # Výsledek je průměr binarizovaných predikcí
+            else:
+                # Standardní inference s jedním modelem pro malé léze
+                result = infer_full_volume_cascaded(
+                    main_model=main_model,
+                    small_lesion_model=small_lesion_model,
+                    input_paths=[adc_path, z_path],
+                    label_path=label_path,
+                    device=device,
+                    small_patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
+                    small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                    use_tta=config.get("use_tta", True),
+                    tta_angle_max=config.get("tta_angle_max", 3),
+                    cascaded_mode=config.get("cascaded_mode", "combined"),
+                    use_z_adc=config["in_channels"] > 1
+                )
+        
         elif config["inference_mode"] == "moe" and expert_model is not None:
             # MoE inference
             result = infer_full_volume_moe(
-                main_model=model,
+                main_model=main_model,
                 expert_model=expert_model,
                 input_paths=[adc_path, z_path],
                 label_path=label_path,
@@ -821,7 +953,7 @@ def run_inference(config):
         else:
             # Standardní inference
             result = infer_full_volume(
-                model=model,
+                model=main_model,
                 input_paths=[adc_path, z_path],
                 label_path=label_path,
                 device=device,

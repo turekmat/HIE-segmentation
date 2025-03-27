@@ -867,4 +867,292 @@ def train_small_lesion_model(config, device="cuda"):
     print("\nTrénování modelu pro detekci malých lézí dokončeno.")
     print(f"Nejlepší model uložen v: {model_save_path}")
     
+    return model_save_path
+
+
+def train_small_lesion_model_with_indices(config, train_indices, fold_idx=None, device="cuda"):
+    """
+    Trénuje model pro detekci malých lézí pouze na datech určených indexy.
+    Tato funkce je navržena pro použití v rámci cross-validace, kdy chceme
+    pro každý fold natrénovat vlastní model pro malé léze pouze na trénovacích datech.
+    
+    Args:
+        config: Konfigurační slovník
+        train_indices: Seznam indexů pro trénování
+        fold_idx: Index foldu (None pro bez cross-validace)
+        device: Zařízení pro výpočet
+        
+    Returns:
+        str: Cesta k natrénovanému modelu
+    """
+    fold_text = f" (FOLD {fold_idx+1})" if fold_idx is not None else ""
+    print(f"\n========== TRÉNOVÁNÍ MODELU PRO DETEKCI MALÝCH LÉZÍ{fold_text} ==========")
+    
+    # Import potřebných funkcí
+    from ..data.dataset import SmallLesionPatchDataset, BONBID3DFullVolumeDataset
+    from torch.utils.data import Subset
+    
+    # Vytvoření trénovacího a validačního datasetu
+    small_patch_size = config.get("small_lesion_patch_size", (16, 16, 16))
+    
+    # Kontrola, zda je velikost patche ve správném formátu
+    if isinstance(small_patch_size, list):
+        small_patch_size = tuple(small_patch_size)
+    
+    print(f"Vytváření datasetu malých lézí s velikostí patche {small_patch_size}")
+    
+    # Nejprve vytvoříme full dataset a poté vybereme pouze trénovací indexy
+    full_dataset = BONBID3DFullVolumeDataset(
+        adc_folder=config["adc_folder"],
+        z_folder=config["z_folder"],
+        label_folder=config["label_folder"],
+        augment=False,
+        extended_dataset=config.get("extended_dataset", False),
+        max_aug_per_orig=config.get("max_aug_per_orig", 0),
+        use_z_adc=config["in_channels"] > 1
+    )
+    
+    # Výběr pouze trénovacích souborů podle indexů
+    train_adc_files = [full_dataset.adc_files[i] for i in train_indices]
+    train_label_files = [full_dataset.lab_files[i] for i in train_indices]
+    
+    if config["in_channels"] > 1:
+        train_z_files = [full_dataset.z_files[i] for i in train_indices]
+    else:
+        train_z_files = None
+    
+    print(f"Vybráno {len(train_adc_files)} souborů pro trénink modelu malých lézí")
+    
+    # Vytvoření datasetu pro trénink a validaci
+    # Používáme pouze vybrané soubory pro trénink
+    train_dataset = SmallLesionPatchDataset(
+        adc_folder=config["adc_folder"],
+        z_folder=config["z_folder"],
+        label_folder=config["label_folder"],
+        patch_size=small_patch_size,
+        patches_per_volume=config.get("small_lesion_patches_per_volume", 200),
+        foreground_ratio=config.get("small_lesion_foreground_ratio", 0.8),
+        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+        augment=config.get("use_augmentation", True),
+        use_z_adc=config["in_channels"] > 1,
+        seed=config["seed"],
+        specific_files={
+            'adc_files': train_adc_files,
+            'z_files': train_z_files,
+            'lab_files': train_label_files
+        }
+    )
+    
+    # PŘIDANÉ: Diagnostické statistiky o datasetu malých lézí
+    print("\n===== STATISTIKY MALÝCH LÉZÍ V DATASETU =====")
+    
+    # Analýza distribuce lézí v datasetu
+    small_lesion_count = 0
+    larger_lesion_count = 0
+    no_lesion_count = 0
+    total_lesion_voxels = 0
+    
+    for info in train_dataset.volume_info:
+        if info['is_small_lesion'] and info['has_lesions']:
+            small_lesion_count += 1
+            total_lesion_voxels += info['lesion_voxels']
+        elif info['has_lesions']:
+            larger_lesion_count += 1
+        else:
+            no_lesion_count += 1
+    
+    print(f"Objemy s malými lézemi: {small_lesion_count}")
+    print(f"Objemy s většími lézemi: {larger_lesion_count}")
+    print(f"Objemy bez lézí: {no_lesion_count}")
+    print(f"Celkem objemů: {len(train_dataset.volume_info)}")
+    
+    # Histogramy velikostí lézí
+    lesion_sizes = [info['lesion_voxels'] for info in train_dataset.volume_info if info['has_lesions']]
+    
+    if lesion_sizes:
+        min_size = min(lesion_sizes)
+        max_size = max(lesion_sizes)
+        avg_size = sum(lesion_sizes) / len(lesion_sizes)
+        
+        print(f"Statistika velikostí lézí:")
+        print(f"  Minimální: {min_size} voxelů")
+        print(f"  Maximální: {max_size} voxelů")
+        print(f"  Průměrná: {avg_size:.1f} voxelů")
+        print(f"  Práh pro malé léze: {config.get('small_lesion_max_voxels', 50)} voxelů")
+        
+        # Kategorie velikostí
+        size_categories = {
+            "velmi malé (≤20 voxelů)": 0,
+            "malé (21-50 voxelů)": 0,
+            "střední (51-200 voxelů)": 0,
+            "velké (>200 voxelů)": 0
+        }
+        
+        for size in lesion_sizes:
+            if size <= 20:
+                size_categories["velmi malé (≤20 voxelů)"] += 1
+            elif size <= 50:
+                size_categories["malé (21-50 voxelů)"] += 1
+            elif size <= 200:
+                size_categories["střední (51-200 voxelů)"] += 1
+            else:
+                size_categories["velké (>200 voxelů)"] += 1
+        
+        print("Distribuce velikostí lézí:")
+        for category, count in size_categories.items():
+            print(f"  {category}: {count} objemů ({(count/len(lesion_sizes))*100:.1f}%)")
+    
+    print(f"\nCelkem voxelů v malých lézích: {total_lesion_voxels}")
+    print(f"Průměrná velikost malé léze: {total_lesion_voxels / max(1, small_lesion_count):.1f} voxelů")
+    
+    # Pro validaci oddělíme 20% dat z trénovacího datasetu
+    dataset_size = len(train_dataset)
+    
+    # Vytvoříme indexy pro rozdělení
+    indices = list(range(dataset_size))
+    np.random.seed(config["seed"] + (fold_idx or 0))  # Rozdílný seed pro každý fold
+    np.random.shuffle(indices)
+    
+    split = int(np.floor(0.2 * dataset_size))
+    train_subset_indices, val_subset_indices = indices[split:], indices[:split]
+    
+    # Vytvoříme subsety
+    from torch.utils.data import Subset
+    
+    train_subset = Subset(train_dataset, train_subset_indices)
+    val_subset = Subset(train_dataset, val_subset_indices)
+    
+    print(f"Velikost trénovacího datasetu: {len(train_subset)} vzorků")
+    print(f"Velikost validačního datasetu: {len(val_subset)} vzorků")
+    
+    # Inicializace modelu a tréninkových komponent
+    model, optimizer, loss_fn, scheduler, train_loader, val_loader = setup_small_lesion_training(
+        config=config,
+        dataset_train=train_subset,
+        dataset_val=val_subset,
+        device=device
+    )
+    
+    # PŘIDANÉ: Výpis parametrů modelu a optimizace
+    print("\n===== PARAMETRY MODELU A TRÉNOVÁNÍ =====")
+    print(f"Model: {config.get('small_lesion_model', 'small_unet')}")
+    print(f"Vstupní kanály: {config['in_channels']}")
+    print(f"Výstupní třídy: {config['out_channels']}")
+    print(f"Ztrátová funkce: {config.get('small_lesion_loss_name', config['loss_name'])}")
+    print(f"Learning rate: {config.get('small_lesion_lr', config['lr'])}")
+    
+    # Počet parametrů modelu
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Počet parametrů modelu: {total_params:,}")
+    
+    # Počet trénovacích epoch
+    epochs = config.get("small_lesion_epochs", config["epochs"])
+    print(f"Počet trénovacích epoch: {epochs}")
+    
+    # Ukládání nejlepšího modelu
+    best_val_dice = 0.0
+    model_dir = config.get("small_lesion_model_dir", os.path.join(config["model_dir"], "small_lesion"))
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # Název souboru modelu s využitím indexu foldu
+    model_filename = f"best_small_lesion_model_fold{fold_idx+1}.pth" if fold_idx is not None else "best_small_lesion_model.pth"
+    model_save_path = os.path.join(model_dir, model_filename)
+    
+    # Tréninkový cyklus
+    print("\n===== PRŮBĚH TRÉNOVÁNÍ =====")
+    
+    # Sledování metrik během trénování
+    best_epoch = 0
+    epoch_times = []
+    train_losses = []
+    val_dices = []
+    
+    for epoch in range(1, epochs + 1):
+        epoch_start_time = time.time()
+        
+        # Trénování jedné epochy
+        train_loss = train_one_epoch(
+            model=model,
+            loader=train_loader,
+            optimizer=optimizer,
+            loss_fn=loss_fn,
+            device=device
+        )
+        
+        # Validace
+        val_metrics = validate_one_epoch(
+            model=model,
+            loader=val_loader,
+            loss_fn=loss_fn,
+            device=device,
+            training_mode="patch",  # Vždy patch-based pro malé léze
+            compute_surface_metrics=config["compute_surface_metrics"],
+            USE_TTA=False,  # Pro zrychlení vypneme TTA při validaci
+            patch_size=small_patch_size,
+            sw_overlap=config.get("sw_overlap", 0.5)
+        )
+        
+        # Aktualizace learning rate
+        curr_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        
+        # Logování metrik
+        metrics = {
+            f"small_lesion_fold{fold_idx+1}_train_loss" if fold_idx is not None else 'small_lesion_train_loss': train_loss,
+            **{f"small_lesion_fold{fold_idx+1}_{k}" if fold_idx is not None else f"small_lesion_{k}": v for k, v in val_metrics.items()}
+        }
+        
+        log_metrics(
+            metrics=metrics,
+            epoch=epoch,
+            fold_idx=fold_idx,
+            lr=curr_lr,
+            wandb_enabled=config["use_wandb"]
+        )
+        
+        # Sledování metrik
+        epoch_time = time.time() - epoch_start_time
+        epoch_times.append(epoch_time)
+        train_losses.append(train_loss)
+        val_dices.append(val_metrics.get('val_dice', 0.0))
+        
+        # Výpis detailních metrik
+        dice_metric = val_metrics.get('val_dice', 0.0)
+        masd_metric = val_metrics.get('val_masd', float('inf'))
+        nsd_metric = val_metrics.get('val_nsd', 0.0)
+        
+        fold_info = f"[Fold {fold_idx+1}] " if fold_idx is not None else ""
+        print(f"{fold_info}Epocha {epoch}/{epochs}: ", end="")
+        print(f"Ztráta = {train_loss:.4f}, DICE = {dice_metric:.4f}", end="")
+        
+        if 'val_masd' in val_metrics:
+            print(f", MASD = {masd_metric:.4f}", end="")
+        
+        if 'val_nsd' in val_metrics:
+            print(f", NSD = {nsd_metric:.4f}", end="")
+            
+        print(f" [čas: {epoch_time:.1f}s]")
+        
+        # Ukládání nejlepšího modelu
+        if dice_metric > best_val_dice:
+            improvement = dice_metric - best_val_dice
+            best_val_dice = dice_metric
+            best_epoch = epoch
+            
+            # Uložení modelu
+            print(f"{fold_info}Nalezen lepší model (DICE = {best_val_dice:.4f}, zlepšení: +{improvement:.4f}), ukládám...")
+            torch.save(model.state_dict(), model_save_path)
+    
+    # PŘIDÁNO: Souhrn trénování
+    print(f"\n===== SOUHRN TRÉNOVÁNÍ MODELU MALÝCH LÉZÍ{fold_text} =====")
+    print(f"Nejlepší model (epocha {best_epoch}): DICE = {best_val_dice:.4f}")
+    print(f"Průměrná doba epochy: {sum(epoch_times)/len(epoch_times):.1f}s")
+    print(f"Celková doba trénování: {sum(epoch_times)/60:.1f} minut")
+    
+    # Grafy vývoje metrik (textová reprezentace)
+    print("\nVývoj ztrátové funkce:")
+    for i, loss in enumerate(train_losses, 1):
+        print(f"Epocha {i}: {'#' * int(loss * 20)}")
+    
+    # Vrácení cesty k nejlepšímu modelu
     return model_save_path 
