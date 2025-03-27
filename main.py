@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import SimpleITK as sitk
 import pickle
+import random
 from datetime import datetime
 from torch.utils.data import DataLoader, Subset
 
@@ -45,7 +46,7 @@ from src.inference.inference import (
     save_segmentation_with_metrics
 )
 from src.models import create_model
-from src.utils import set_random_seed, setup_wandb
+from src.utils import setup_wandb
 
 def set_seed(seed):
     """Nastavení fixního seedu pro reprodukovatelnost"""
