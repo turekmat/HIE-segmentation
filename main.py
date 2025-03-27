@@ -9,6 +9,7 @@ import torch.nn as nn
 import SimpleITK as sitk
 import pickle
 import random
+import wandb
 from datetime import datetime
 from torch.utils.data import DataLoader, Subset
 
@@ -230,9 +231,9 @@ def run_cross_validation(config):
     
     # Inicializace wandb, pokud je povoleno
     if config["use_wandb"]:
-        wandb.init(
-            project=config["wandb_project"],
-            name=config["wandb_run_name"],
+        setup_wandb(
+            project_name=config["wandb_project"],
+            run_name=config["wandb_run_name"],
             config=config
         )
     
