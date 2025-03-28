@@ -40,7 +40,6 @@ from src.training.train import (
     log_metrics,
     create_cv_folds,
     train_with_ohem,
-    compute_all_metrics
 )
 from src.inference.inference import (
     infer_full_volume,
@@ -53,6 +52,7 @@ from src.inference.inference import (
 from src.models import create_model
 from src.utils import setup_wandb
 from src.models import create_small_lesion_model
+from src.utils.metrics import compute_all_metrics
 
 def set_seed(seed):
     """Nastavení fixního seedu pro reprodukovatelnost"""

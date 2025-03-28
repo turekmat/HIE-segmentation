@@ -1024,7 +1024,7 @@ def infer_full_volume_cascaded(
         standard_pred_binary = np.argmax(main_pred_probs, axis=0)
         small_pred_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.int32)
         
-        # Výpočet statistik o příspěvku každého modelu
+        # Výpočet statistik o příspěvku každému modelu
         unique_main = np.sum((standard_pred_binary > 0) & (final_pred > 0))
         unique_small = np.sum((small_pred_binary > 0) & (final_pred > 0))
         total_voxels = np.sum(final_pred > 0)
@@ -1092,7 +1092,7 @@ def infer_full_volume_cascaded(
     # Výpočet metrik, pokud je k dispozici ground truth
     metrics = {}
     if lab_np is not None:
-        from src.training.train import compute_all_metrics
+        from src.utils.metrics import compute_all_metrics
         metrics = compute_all_metrics(final_pred, lab_np, include_surface_metrics=True)
         print(f"\n===== METRIKY =====")
         for metric_name, metric_value in metrics.items():

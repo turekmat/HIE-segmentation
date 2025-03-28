@@ -123,4 +123,34 @@ def dice_coefficient(y_pred, y_true):
         return 1.0
     
     intersection = np.sum(y_pred & y_true)
-    return (2.0 * intersection) / (pred_sum + true_sum + epsilon) 
+    return (2.0 * intersection) / (pred_sum + true_sum + epsilon)
+
+def compute_all_metrics(y_pred, y_true, include_surface_metrics=True, spacing=(1.0, 1.0, 1.0), sampling_ratio=0.5):
+    """
+    Vypočítá všechny metriky mezi predikovanou a ground truth maskou.
+    
+    Args:
+        y_pred: Predikovaná binární maska
+        y_true: Ground truth binární maska
+        include_surface_metrics: Zda počítat i povrchové metriky (MASD, NSD)
+        spacing: Voxel spacing pro výpočet povrchových metrik
+        sampling_ratio: Poměr bodů použitých pro výpočet povrchových metrik
+        
+    Returns:
+        dict: Slovník s vypočtenými metrikami
+    """
+    # Převod na boolean array pro jistotu
+    y_pred = y_pred.astype(np.bool_)
+    y_true = y_true.astype(np.bool_)
+    
+    # Výpočet Dice koeficientu
+    metrics = {
+        "dice": dice_coefficient(y_pred, y_true)
+    }
+    
+    # Výpočet povrchových metrik, pokud je požadováno
+    if include_surface_metrics:
+        metrics["masd"] = compute_masd(y_pred, y_true, spacing, sampling_ratio)
+        metrics["nsd"] = compute_nsd(y_pred, y_true, spacing, sampling_ratio)
+    
+    return metrics 
