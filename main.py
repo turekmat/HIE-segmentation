@@ -1092,7 +1092,7 @@ def main():
                         help="Použít kaskádový přístup pro segmentaci malých lézí")
     parser.add_argument("--cascaded_mode", type=str, choices=["roi_only", "combined"], default="combined",
                         help="Režim kaskádového přístupu: 'roi_only' jen přidá ROI jako kanál, 'combined' kombinuje předpovědi")
-    parser.add_argument("--small_lesion_model", type=str, choices=["unet", "nnunet", "deeplabv3plus", "small_unet", "simple_resunet"], 
+    parser.add_argument("--small_lesion_model", type=str, choices=["unet", "nnunet", "deeplabv3plus", "small_unet", "simple_resunet", "attention_unet"],
                         default="small_unet", help="Model pro detekci malých lézí")
     parser.add_argument("--small_lesion_patch_size", nargs=3, type=int, default=[16, 16, 16],
                         help="Velikost patche pro model malých lézí")
