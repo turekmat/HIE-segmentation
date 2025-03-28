@@ -220,9 +220,18 @@ class AttentionGate(nn.Module):
         # g = features z dekodéru, x = skip connection features
         g1 = self.W_g(g)
         x1 = self.W_x(x)
+        
+        # Zajištění stejné velikosti tenzorů před sčítáním
+        if g1.shape[2:] != x1.shape[2:]:
+            g1 = F.interpolate(g1, size=x1.shape[2:], mode='trilinear', align_corners=True)
+        
         psi = self.relu(g1 + x1)
         psi = self.psi(psi)
         
+        # Zajištění stejné velikosti tenzoru psi s tenzorem x před násobením
+        if psi.shape[2:] != x.shape[2:]:
+            psi = F.interpolate(psi, size=x.shape[2:], mode='trilinear', align_corners=True)
+            
         return x * psi
 
 

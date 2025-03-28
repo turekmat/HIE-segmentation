@@ -716,31 +716,87 @@ def train_small_lesion_model(config, device="cuda"):
     print(f"\nCelkem voxelů v malých lézích: {total_lesion_voxels}")
     print(f"Průměrná velikost malé léze: {total_lesion_voxels / max(1, small_lesion_count):.1f} voxelů")
     
-    # Pro validaci oddělíme 20% dat z trénovacího datasetu
-    dataset_size = len(train_dataset)
+    # Pro validaci oddělíme 20% dat z trénovacího datasetu, ale zachováme stejnou strategii vzorkování
+    print("Vytváření validační množiny se stejnou strategií vzorkování...")
     
-    # Vytvoříme indexy pro rozdělení
-    indices = list(range(dataset_size))
+    # Rozdělíme objemy na trénovací a validační
+    volume_info = train_dataset.volume_info
     np.random.seed(config["seed"])
-    np.random.shuffle(indices)
+    np.random.shuffle(volume_info)
     
+    dataset_size = len(volume_info)
     split = int(np.floor(0.2 * dataset_size))
-    train_indices, val_indices = indices[split:], indices[:split]
     
-    # Vytvoříme subsety
-    from torch.utils.data import Subset
+    # Vytvoříme seznamy souborů pro validaci
+    val_volume_indices = [info['index'] for info in volume_info[:split]]
+    val_adc_files = [train_dataset.adc_files[i] for i in val_volume_indices]
+    val_label_files = [train_dataset.lab_files[i] for i in val_volume_indices]
     
-    train_subset = Subset(train_dataset, train_indices)
-    val_subset = Subset(train_dataset, val_indices)
+    if config["in_channels"] > 1:
+        val_z_files = [train_dataset.z_files[i] for i in val_volume_indices]
+    else:
+        val_z_files = None
     
-    print(f"Velikost trénovacího datasetu: {len(train_subset)} vzorků")
-    print(f"Velikost validačního datasetu: {len(val_subset)} vzorků")
+    # Vytvoření validačního datasetu se stejnou strategií vzorkování
+    val_dataset = SmallLesionPatchDataset(
+        adc_folder=config["adc_folder"],
+        z_folder=config["z_folder"],
+        label_folder=config["label_folder"],
+        patch_size=small_patch_size,
+        patches_per_volume=config.get("small_lesion_patches_per_volume", 200),
+        foreground_ratio=config.get("small_lesion_foreground_ratio", 0.8),
+        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+        augment=False,  # Bez augmentace pro validaci
+        use_z_adc=config["in_channels"] > 1,
+        seed=config["seed"] + 1,  # Jiný seed pro validační data
+        specific_files={
+            'adc_files': val_adc_files,
+            'z_files': val_z_files,
+            'lab_files': val_label_files
+        },
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+    )
+    
+    # Aktualizace trénovacího datasetu bez validačních vzorků
+    train_indices = [i for i in range(len(train_dataset.adc_files)) if i not in val_volume_indices]
+    
+    # Vytvoření upraveného trénovacího datasetu
+    updated_train_adc_files = [train_dataset.adc_files[i] for i in train_indices]
+    updated_train_label_files = [train_dataset.lab_files[i] for i in train_indices]
+    
+    if config["in_channels"] > 1:
+        updated_train_z_files = [train_dataset.z_files[i] for i in train_indices]
+    else:
+        updated_train_z_files = None
+    
+    # Vytvoření nového trénovacího datasetu
+    train_dataset = SmallLesionPatchDataset(
+        adc_folder=config["adc_folder"],
+        z_folder=config["z_folder"],
+        label_folder=config["label_folder"],
+        patch_size=small_patch_size,
+        patches_per_volume=config.get("small_lesion_patches_per_volume", 200),
+        foreground_ratio=config.get("small_lesion_foreground_ratio", 0.8),
+        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+        augment=config.get("use_augmentation", True),
+        use_z_adc=config["in_channels"] > 1,
+        seed=config["seed"],
+        specific_files={
+            'adc_files': updated_train_adc_files,
+            'z_files': updated_train_z_files,
+            'lab_files': updated_train_label_files
+        },
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+    )
+    
+    print(f"Velikost validačního datasetu: {len(val_dataset)} vzorků")
+    print(f"Velikost upraveného trénovacího datasetu: {len(train_dataset)} vzorků")
     
     # Inicializace modelu a tréninkových komponent
     model, optimizer, loss_fn, scheduler, train_loader, val_loader = setup_small_lesion_training(
         config=config,
-        dataset_train=train_subset,
-        dataset_val=val_subset,
+        dataset_train=train_dataset,
+        dataset_val=val_dataset,
         device=device
     )
     
@@ -1007,31 +1063,87 @@ def train_small_lesion_model_with_indices(config, train_indices, fold_idx=None, 
     print(f"\nCelkem voxelů v malých lézích: {total_lesion_voxels}")
     print(f"Průměrná velikost malé léze: {total_lesion_voxels / max(1, small_lesion_count):.1f} voxelů")
     
-    # Pro validaci oddělíme 20% dat z trénovacího datasetu
-    dataset_size = len(train_dataset)
+    # Pro validaci oddělíme 20% dat z trénovacího datasetu, ale zachováme stejnou strategii vzorkování
+    print("Vytváření validační množiny se stejnou strategií vzorkování...")
     
-    # Vytvoříme indexy pro rozdělení
-    indices = list(range(dataset_size))
-    np.random.seed(config["seed"] + (fold_idx or 0))  # Rozdílný seed pro každý fold
-    np.random.shuffle(indices)
+    # Rozdělíme objemy na trénovací a validační
+    volume_info = train_dataset.volume_info
+    np.random.seed(config["seed"])
+    np.random.shuffle(volume_info)
     
+    dataset_size = len(volume_info)
     split = int(np.floor(0.2 * dataset_size))
-    train_subset_indices, val_subset_indices = indices[split:], indices[:split]
     
-    # Vytvoříme subsety
-    from torch.utils.data import Subset
+    # Vytvoříme seznamy souborů pro validaci
+    val_volume_indices = [info['index'] for info in volume_info[:split]]
+    val_adc_files = [train_dataset.adc_files[i] for i in val_volume_indices]
+    val_label_files = [train_dataset.lab_files[i] for i in val_volume_indices]
     
-    train_subset = Subset(train_dataset, train_subset_indices)
-    val_subset = Subset(train_dataset, val_subset_indices)
+    if config["in_channels"] > 1:
+        val_z_files = [train_dataset.z_files[i] for i in val_volume_indices]
+    else:
+        val_z_files = None
     
-    print(f"Velikost trénovacího datasetu: {len(train_subset)} vzorků")
-    print(f"Velikost validačního datasetu: {len(val_subset)} vzorků")
+    # Vytvoření validačního datasetu se stejnou strategií vzorkování
+    val_dataset = SmallLesionPatchDataset(
+        adc_folder=config["adc_folder"],
+        z_folder=config["z_folder"],
+        label_folder=config["label_folder"],
+        patch_size=small_patch_size,
+        patches_per_volume=config.get("small_lesion_patches_per_volume", 200),
+        foreground_ratio=config.get("small_lesion_foreground_ratio", 0.8),
+        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+        augment=False,  # Bez augmentace pro validaci
+        use_z_adc=config["in_channels"] > 1,
+        seed=config["seed"] + 1,  # Jiný seed pro validační data
+        specific_files={
+            'adc_files': val_adc_files,
+            'z_files': val_z_files,
+            'lab_files': val_label_files
+        },
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+    )
+    
+    # Aktualizace trénovacího datasetu bez validačních vzorků
+    train_indices = [i for i in range(len(train_dataset.adc_files)) if i not in val_volume_indices]
+    
+    # Vytvoření upraveného trénovacího datasetu
+    updated_train_adc_files = [train_dataset.adc_files[i] for i in train_indices]
+    updated_train_label_files = [train_dataset.lab_files[i] for i in train_indices]
+    
+    if config["in_channels"] > 1:
+        updated_train_z_files = [train_dataset.z_files[i] for i in train_indices]
+    else:
+        updated_train_z_files = None
+    
+    # Vytvoření nového trénovacího datasetu
+    train_dataset = SmallLesionPatchDataset(
+        adc_folder=config["adc_folder"],
+        z_folder=config["z_folder"],
+        label_folder=config["label_folder"],
+        patch_size=small_patch_size,
+        patches_per_volume=config.get("small_lesion_patches_per_volume", 200),
+        foreground_ratio=config.get("small_lesion_foreground_ratio", 0.8),
+        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+        augment=config.get("use_augmentation", True),
+        use_z_adc=config["in_channels"] > 1,
+        seed=config["seed"],
+        specific_files={
+            'adc_files': updated_train_adc_files,
+            'z_files': updated_train_z_files,
+            'lab_files': updated_train_label_files
+        },
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+    )
+    
+    print(f"Velikost validačního datasetu: {len(val_dataset)} vzorků")
+    print(f"Velikost upraveného trénovacího datasetu: {len(train_dataset)} vzorků")
     
     # Inicializace modelu a tréninkových komponent
     model, optimizer, loss_fn, scheduler, train_loader, val_loader = setup_small_lesion_training(
         config=config,
-        dataset_train=train_subset,
-        dataset_val=val_subset,
+        dataset_train=train_dataset,
+        dataset_val=val_dataset,
         device=device
     )
     
