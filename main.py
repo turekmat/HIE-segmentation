@@ -39,17 +39,20 @@ from src.training.train import (
     validate_one_epoch, 
     log_metrics,
     create_cv_folds,
-    train_with_ohem
+    train_with_ohem,
+    compute_all_metrics
 )
 from src.inference.inference import (
     infer_full_volume,
     infer_full_volume_moe,
     save_segmentation_with_metrics,
     infer_full_volume_cascaded,
-    get_tta_transforms
+    get_tta_transforms,
+    save_validation_results_pdf
 )
 from src.models import create_model
 from src.utils import setup_wandb
+from src.models import create_small_lesion_model
 
 def set_seed(seed):
     """Nastavení fixního seedu pro reprodukovatelnost"""
@@ -585,8 +588,30 @@ def run_cross_validation(config):
                             small_lesion_model_path = small_lesion_model_paths[fold_idx]
                             print(f"  Používám model pro malé léze pro fold {fold_idx+1} z: {small_lesion_model_path}")
                             config["small_lesion_model_path"] = small_lesion_model_path
+                            
+                            # Načtení modelu pro malé léze
+                            small_lesion_model = create_small_lesion_model(
+                                model_name=config["small_lesion_model"],
+                                in_channels=config["in_channels"],
+                                out_channels=config["out_channels"]
+                            )
+                            small_lesion_model.to(device)
+                            small_lesion_model.load_state_dict(torch.load(small_lesion_model_path, map_location=device))
+                            small_lesion_model.eval()
+                            print(f"  Model pro malé léze úspěšně načten.")
                         else:
                             print(f"  Model pro malé léze pro fold {fold_idx+1} nenalezen! Používám výchozí model.")
+                            # Vytvoření nového modelu
+                            small_lesion_model = create_small_lesion_model(
+                                model_name=config["small_lesion_model"],
+                                in_channels=config["in_channels"],
+                                out_channels=config["out_channels"]
+                            )
+                            small_lesion_model.to(device)
+                            small_lesion_model.eval()
+                            print(f"  VAROVÁNÍ: Používám nenatrénovaný model pro malé léze!")
+                    else:
+                        small_lesion_model = None
                     
                     # Načteme data validačního datasetu do paměti
                     val_data = []
@@ -606,8 +631,8 @@ def run_cross_validation(config):
                         volumes = []
                         
                         # Vždy načíst ADC mapu (první v seznamu)
-                        adc_path = input_paths[0]
-                        sitk_img = sitk.ReadImage(adc_path)
+                        adc_path_curr = input_paths[0]
+                        sitk_img = sitk.ReadImage(adc_path_curr)
                         np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
                         volumes.append(np_vol)
                         
@@ -630,7 +655,12 @@ def run_cross_validation(config):
                         if config.get("use_tta", True):
                             tta_transforms = get_tta_transforms(angle_max=config.get("tta_angle_max", 3))
                         
-                        result = infer_full_volume_cascaded(
+                        # Ujistíme se, že small_lesion_model je definován
+                        if not config.get("use_cascaded_approach", False) or 'small_lesion_model' not in locals():
+                            small_lesion_model = None
+                        
+                        # Inference s aktuálním ensemblem modelů
+                        result_item = infer_full_volume_cascaded(
                             input_vol=input_vol,
                             main_model=model,
                             small_lesion_model=small_lesion_model,
@@ -650,9 +680,9 @@ def run_cross_validation(config):
                         )
                         
                         # Výpis metrik
-                        if result["metrics"]:
-                            metrics = result["metrics"]
-                            patient_id = result.get('patient_id', f'idx_{val_idx}')
+                        if result_item["metrics"]:
+                            metrics = result_item["metrics"]
+                            patient_id = result_item.get('patient_id', f'idx_{val_idx}')
                             print(f"    Pacient {patient_id}: Dice={metrics['dice']:.4f}, MASD={metrics['masd']:.4f}, NSD={metrics['nsd']:.4f}")
                         
                         # Uložení segmentace a vizualizací pomocí nové funkce pro 3 sloupce
@@ -662,11 +692,11 @@ def run_cross_validation(config):
                         prefix = f"best_val_{val_idx_pos}" if using_best_model else f"val_{val_idx_pos}"
                         
                         # Uložení MHA souboru a standardního PDF
-                        save_segmentation_with_metrics(result, output_dir, prefix=prefix, save_pdf_comparison=False)
+                        save_segmentation_with_metrics(result_item, output_dir, prefix=prefix, save_pdf_comparison=False)
                         
                         # Uložení nového PDF se třemi sloupci (ZADC, LABEL, PRED)
                         pdf_prefix = f"best_val3col_{val_idx_pos}" if using_best_model else f"val3col_{val_idx_pos}"
-                        save_validation_results_pdf(result, output_dir, prefix=pdf_prefix)
+                        save_validation_results_pdf(result_item, output_dir, prefix=pdf_prefix)
                     
                     # Vrácení modelu do původního stavu, pokud byl načten nejlepší model
                     if using_best_model:
@@ -940,22 +970,68 @@ def run_inference(config):
                 
                 for i, (main_m, small_m) in enumerate(zip(models, small_lesion_models)):
                     print(f"Ensemble model {i+1}/{len(models)}...")
-                    result = infer_full_volume_cascaded(
+                    
+                    # Načtení vstupních dat
+                    input_paths = [adc_path, z_path]
+                    volumes = []
+                    
+                    # Vždy načíst ADC mapu (první v seznamu)
+                    adc_path_curr = input_paths[0]
+                    sitk_img = sitk.ReadImage(adc_path_curr)
+                    np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
+                    volumes.append(np_vol)
+                    
+                    # Načíst Z-ADC mapu, pouze pokud se používá
+                    if config["in_channels"] > 1 and len(input_paths) > 1:
+                        zadc_path = input_paths[1]
+                        try:
+                            sitk_zadc = sitk.ReadImage(zadc_path)
+                            zadc_np = sitk.GetArrayFromImage(sitk_zadc).astype(np.float32)
+                            volumes.append(zadc_np)
+                        except Exception as e:
+                            print(f"Varování: Nelze načíst Z-ADC soubor {zadc_path}: {e}")
+                    
+                    # Vytvoření vstupního tensoru
+                    input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
+                    
+                    # Získání transformací pro TTA, pokud je povoleno
+                    tta_transforms = None
+                    if config.get("use_tta", True):
+                        tta_transforms = get_tta_transforms(angle_max=config.get("tta_angle_max", 3))
+                    
+                    # Inference s aktuálním ensemblem modelů
+                    result_item = infer_full_volume_cascaded(
+                        input_vol=input_vol,
                         main_model=main_m,
                         small_lesion_model=small_m,
-                        input_paths=[adc_path, z_path],
-                        label_path=label_path,
                         device=device,
-                        small_patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
-                        small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                        use_tta=config.get("use_tta", True),
+                        tta_transforms=tta_transforms,
                         cascaded_mode=config.get("cascaded_mode", "combined"),
-                        use_z_adc=config["in_channels"] > 1
+                        small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                        patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
+                        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+                        # Parametry pro pokročilou kombinaci predikcí
+                        alpha=config.get("combine_alpha", 0.6),
+                        confidence_boost_factor=config.get("combine_boost_factor", 1.5),
+                        high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
+                        adaptive_weight=config.get("combine_adaptive", True),
+                        size_based_weight=config.get("combine_size_based", True)
                     )
-                    predictions.append(result)
+                    predictions.append(result_item["prediction"])
                 
                 # Průměrování predikcí ensemblu
-                ensemble_pred = np.mean([pred > 0.5 for pred in predictions], axis=0).astype(np.int32)
-                result = ensemble_pred  # Výsledek je průměr binarizovaných predikcí
+                ensemble_pred = np.mean([pred for pred in predictions], axis=0).astype(np.int32)
+                result = {
+                    "prediction": ensemble_pred,  # Výsledek je průměr predikcí
+                    "metrics": {}
+                }
+                
+                # Pokud máme ground truth, spočítáme metriky
+                if label_path:
+                    lab_sitk = sitk.ReadImage(label_path)
+                    lab_np = sitk.GetArrayFromImage(lab_sitk)
+                    result["metrics"] = compute_all_metrics(ensemble_pred, lab_np, include_surface_metrics=True)
             else:
                 # Standardní inference s jedním modelem pro malé léze
                 input_paths = [adc_path, z_path]
