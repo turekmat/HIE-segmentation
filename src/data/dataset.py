@@ -324,7 +324,8 @@ class SmallLesionPatchDataset(Dataset):
         augment=True,
         use_z_adc=True,
         seed=42,
-        specific_files=None
+        specific_files=None,
+        large_lesion_sampling_ratio=0.25  # Nový parametr pro kontrolu vzorkování velkých lézí
     ):
         """
         Args:
@@ -340,6 +341,7 @@ class SmallLesionPatchDataset(Dataset):
             seed: Seed pro reprodukovatelnost
             specific_files: Slovník obsahující seznamy konkrétních souborů, které mají být použity
                            {'adc_files': [...], 'z_files': [...], 'lab_files': [...]}
+            large_lesion_sampling_ratio: Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)
         """
         super().__init__()
         self.adc_folder = adc_folder
@@ -352,6 +354,7 @@ class SmallLesionPatchDataset(Dataset):
         self.augment = augment
         self.use_z_adc = use_z_adc
         self.seed = seed
+        self.large_lesion_sampling_ratio = large_lesion_sampling_ratio
         
         # Nastavení seedu pro reprodukovatelnost
         np.random.seed(seed)
@@ -380,6 +383,20 @@ class SmallLesionPatchDataset(Dataset):
         
         # Vytvoření seznamu všech dostupných patchů
         self.all_patches = self._create_patch_list()
+        
+        # Výpis statistik o počtu patchů
+        small_lesion_volumes_count = len([info for info in self.volume_info if info['is_small_lesion'] and info['has_lesions']])
+        large_lesion_volumes_count = len([info for info in self.volume_info if not info['is_small_lesion'] and info['has_lesions']])
+        no_lesion_volumes_count = len([info for info in self.volume_info if not info['has_lesions']])
+        
+        print(f"\nStatistika vzorků pro malý model:")
+        print(f"  Celkový počet vzorků: {len(self.all_patches)}")
+        print(f"  Objemy s malými lézemi: {small_lesion_volumes_count}")
+        print(f"  Objemy s velkými lézemi: {large_lesion_volumes_count}")
+        print(f"  Objemy bez lézí: {no_lesion_volumes_count}")
+        print(f"  Vzorky z volimů s malými lézemi: ~{small_lesion_volumes_count * self.patches_per_volume} (zachováno 100%)")
+        print(f"  Vzorky z volimů s velkými lézemi: ~{int(large_lesion_volumes_count * self.patches_per_volume * self.large_lesion_sampling_ratio)} (redukováno na {self.large_lesion_sampling_ratio*100:.0f}%)")
+        print(f"  Vzorky z objemů bez lézí: ~{min(no_lesion_volumes_count * 50, len(self.all_patches) - small_lesion_volumes_count * self.patches_per_volume - int(large_lesion_volumes_count * self.patches_per_volume * self.large_lesion_sampling_ratio))}")
         
     def _analyze_volumes(self):
         """
@@ -445,11 +462,14 @@ class SmallLesionPatchDataset(Dataset):
         """
         all_patches = []
         
-        # Prioritní výběr patchů z objemů s malými lézemi
-        small_lesion_volumes = [info for info in self.volume_info if info['is_small_lesion']]
-        other_volumes = [info for info in self.volume_info if not info['is_small_lesion']]
+        # Prioritní výběr patchů z objemů s malými lézemi - tyto zachováváme všechny
+        small_lesion_volumes = [info for info in self.volume_info if info['is_small_lesion'] and info['has_lesions']]
+        large_lesion_volumes = [info for info in self.volume_info if not info['is_small_lesion'] and info['has_lesions']]
+        no_lesion_volumes = [info for info in self.volume_info if not info['has_lesions']]
         
-        # Nejprve zpracujeme objemy s malými lézemi
+        print(f"Zpracovávám {len(small_lesion_volumes)} objemů s malými lézemi...")
+        
+        # Nejprve zpracujeme objemy s malými lézemi - zachováváme všechny
         for vol_info in small_lesion_volumes:
             vol_idx = vol_info['index']
             
@@ -461,15 +481,20 @@ class SmallLesionPatchDataset(Dataset):
             # Načtení předpočítaných středů lézí
             centers = vol_info['lesion_centers']
             
-            # Výběr náhodných patchů se zaměřením na oblasti lézí
+            # Výběr náhodných patchů se zaměřením na oblasti lézí - zachováváme plný počet
             vol_patches = self._sample_patches_from_volume(
-                vol_idx, lab_np, centers, self.patches_per_volume * 2  # Více patchů z malých lézí
+                vol_idx, lab_np, centers, self.patches_per_volume
             )
             all_patches.extend(vol_patches)
         
-        # Pokud nemáme dostatek patchů, přidáme i z ostatních objemů
-        if len(all_patches) < self.patches_per_volume * len(self.volume_info):
-            for vol_info in other_volumes:
+        print(f"Zpracovávám {len(large_lesion_volumes)} objemů s velkými lézemi (redukovaný počet vzorků)...")
+        
+        # Zpracování objemů s velkými lézemi - redukovaný počet vzorků
+        if large_lesion_volumes:
+            # Redukujeme počet patchů z velkých lézí
+            patches_per_large_volume = int(self.patches_per_volume * self.large_lesion_sampling_ratio)
+            
+            for vol_info in large_lesion_volumes:
                 vol_idx = vol_info['index']
                 
                 # Načtení label dat
@@ -480,19 +505,37 @@ class SmallLesionPatchDataset(Dataset):
                 # Načtení předpočítaných středů lézí
                 centers = vol_info['lesion_centers']
                 
-                # Výběr náhodných patchů
+                # Výběr redukovaného počtu náhodných patchů
                 vol_patches = self._sample_patches_from_volume(
-                    vol_idx, lab_np, centers, self.patches_per_volume
+                    vol_idx, lab_np, centers, patches_per_large_volume
+                )
+                all_patches.extend(vol_patches)
+        
+        print(f"Zpracovávám {len(no_lesion_volumes)} objemů bez lézí (negativní příklady)...")
+        
+        # Přidání omezeného počtu vzorků z objemů bez lézí (negativní příklady)
+        if no_lesion_volumes:
+            # Maximálně 50 patchů z každého objemu bez lézí
+            patches_per_empty_volume = min(50, self.patches_per_volume // 4)
+            
+            for vol_info in no_lesion_volumes:
+                vol_idx = vol_info['index']
+                
+                # Načtení label dat
+                lab_path = os.path.join(self.label_folder, vol_info['lab_file'])
+                lab_sitk = sitk.ReadImage(lab_path)
+                lab_np = sitk.GetArrayFromImage(lab_sitk)
+                
+                # Výběr omezeného počtu náhodných patchů
+                vol_patches = self._sample_patches_from_volume(
+                    vol_idx, lab_np, [], patches_per_empty_volume  # prázdný seznam středů = náhodné vzorkování
                 )
                 all_patches.extend(vol_patches)
         
         # Náhodně promícháme patche
         np.random.shuffle(all_patches)
         
-        # Omezíme počet patchů na požadovaný celkový počet
-        max_patches = self.patches_per_volume * len(self.volume_info)
-        if len(all_patches) > max_patches:
-            all_patches = all_patches[:max_patches]
+        print(f"Celkem vygenerováno {len(all_patches)} patchů")
         
         return all_patches
     

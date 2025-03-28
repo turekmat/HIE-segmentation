@@ -650,7 +650,8 @@ def train_small_lesion_model(config, device="cuda"):
         small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
         augment=config.get("use_augmentation", True),
         use_z_adc=config["in_channels"] > 1,
-        seed=config["seed"]
+        seed=config["seed"],
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
     )
     
     # PŘIDANÉ: Diagnostické statistiky o datasetu malých lézí
@@ -940,7 +941,8 @@ def train_small_lesion_model_with_indices(config, train_indices, fold_idx=None, 
             'adc_files': train_adc_files,
             'z_files': train_z_files,
             'lab_files': train_label_files
-        }
+        },
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
     )
     
     # PŘIDANÉ: Diagnostické statistiky o datasetu malých lézí

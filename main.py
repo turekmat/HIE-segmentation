@@ -1110,6 +1110,8 @@ def main():
                         help="Poměr foreground voxelů v trénovacích patchích pro model malých lézí")
     parser.add_argument("--small_lesion_max_voxels", type=int, default=50,
                         help="Maximální počet voxelů pro klasifikaci léze jako 'malé'")
+    parser.add_argument("--small_lesion_large_lesion_sampling_ratio", type=float, default=0.25,
+                        help="Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)")
     parser.add_argument("--small_lesion_loss_name", type=str, default="focal_ce_combo",
                         help="Ztrátová funkce pro trénování modelu malých lézí")
 

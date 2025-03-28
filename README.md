@@ -76,6 +76,36 @@ python main.py --mode train \
 
 Alternativně můžete upravit a spustit příklad v `examples/train_example.py`.
 
+### Trénování s kaskádovým přístupem (specializovaný model pro malé léze)
+
+Pro trénování modelu s kaskádovým přístupem a specializovaným modelem pro malé léze:
+
+```bash
+python main.py --mode train \
+    --adc_folder /path/to/adc_data \
+    --z_folder /path/to/z_adc_data \
+    --label_folder /path/to/label_data \
+    --model_name swinunetr \
+    --in_channels 2 \
+    --out_channels 2 \
+    --batch_size 1 \
+    --epochs 30 \
+    --lr 6e-4 \
+    --use_cascaded_approach \
+    --small_lesion_model attention_unet \
+    --small_lesion_patch_size 16 16 16 \
+    --small_lesion_batch_size 128 \
+    --small_lesion_max_voxels 50 \
+    --small_lesion_foreground_ratio 0.8 \
+    --small_lesion_large_lesion_sampling_ratio 0.25 \
+    --small_lesion_epochs 15 \
+    --cascaded_mode combined \
+    --n_folds 5 \
+    --output_dir outputs/cascaded_attention_training
+```
+
+Nový `attention_unet` model pro malé léze je optimalizován pro práci s malými patchi (16x16x16) a využívá mechanismus pozornosti pro lepší detekci detailů v malých lézích. Parametr `small_lesion_large_lesion_sampling_ratio` umožňuje redukovat počet vzorků z velkých lézí (výchozí hodnota 0.25 znamená 25% vzorků), což výrazně urychluje trénování při zachování přesnosti modelu na malých lézích.
+
 ### Inference
 
 Pro inferenci na nových datech:
@@ -133,6 +163,16 @@ Projekt používá konfigurační systém, který umožňuje nastavit různé pa
   - `in_channels`: Počet vstupních kanálů
   - `out_channels`: Počet výstupních tříd
   - `drop_rate`: Dropout rate
+
+- **Parametry specializovaného modelu pro malé léze**:
+
+  - `small_lesion_model`: Jméno modelu pro detekci malých lézí ("small_unet", "simple_resunet", "attention_unet")
+  - `small_lesion_patch_size`: Velikost patche pro trénování modelu malých lézí (např. [16, 16, 16])
+  - `small_lesion_batch_size`: Velikost dávky pro trénování modelu malých lézí
+  - `small_lesion_max_voxels`: Maximální počet voxelů pro definici malé léze
+  - `small_lesion_foreground_ratio`: Poměr pozitivních vzorků při trénování modelu malých lézí
+  - `small_lesion_large_lesion_sampling_ratio`: Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)
+  - `small_lesion_epochs`: Počet epoch pro trénování modelu malých lézí
 
 - **Parametry trénování**:
 
