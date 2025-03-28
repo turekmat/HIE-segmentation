@@ -44,7 +44,9 @@ from src.training.train import (
 from src.inference.inference import (
     infer_full_volume,
     infer_full_volume_moe,
-    save_segmentation_with_metrics
+    save_segmentation_with_metrics,
+    infer_full_volume_cascaded,
+    get_tta_transforms
 )
 from src.models import create_model
 from src.utils import setup_wandb
@@ -599,17 +601,52 @@ def run_cross_validation(config):
                         label_path = os.path.join(config["label_folder"], full_dataset.lab_files[val_idx])
                         
                         # Provedení inference
-                        result = infer_full_volume(
-                            model=model,
-                            input_paths=[adc_path, z_path],
-                            label_path=label_path,
+                        input_paths = [adc_path, z_path]
+                        # Načtení vstupních dat
+                        volumes = []
+                        
+                        # Vždy načíst ADC mapu (první v seznamu)
+                        adc_path = input_paths[0]
+                        sitk_img = sitk.ReadImage(adc_path)
+                        np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
+                        volumes.append(np_vol)
+                        
+                        # Načíst Z-ADC mapu, pouze pokud se používá
+                        if config["in_channels"] > 1 and len(input_paths) > 1:
+                            zadc_path = input_paths[1]
+                            try:
+                                sitk_zadc = sitk.ReadImage(zadc_path)
+                                zadc_np = sitk.GetArrayFromImage(sitk_zadc).astype(np.float32)
+                                volumes.append(zadc_np)
+                            except Exception as e:
+                                print(f"Varování: Nelze načíst Z-ADC soubor {zadc_path}: {e}")
+                                print("Inference bude provedena pouze s ADC mapou.")
+                        
+                        # Vytvoření vstupního tensoru
+                        input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
+                        
+                        # Získání transformací pro TTA, pokud je povoleno
+                        tta_transforms = None
+                        if config.get("use_tta", True):
+                            tta_transforms = get_tta_transforms(angle_max=config.get("tta_angle_max", 3))
+                        
+                        result = infer_full_volume_cascaded(
+                            input_vol=input_vol,
+                            main_model=model,
+                            small_lesion_model=small_lesion_model,
                             device=device,
-                            use_tta=config["use_tta"],
-                            tta_angle_max=config["tta_angle_max"],
-                            training_mode=config["training_mode"],
-                            patch_size=config["patch_size"],
-                            batch_size=config["batch_size"],
-                            use_z_adc=config["in_channels"] > 1
+                            use_tta=config.get("use_tta", True),
+                            tta_transforms=tta_transforms,
+                            cascaded_mode=config.get("cascaded_mode", "combined"),
+                            small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                            patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
+                            small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+                            # Parametry pro pokročilou kombinaci predikcí
+                            alpha=config.get("combine_alpha", 0.6),
+                            confidence_boost_factor=config.get("combine_boost_factor", 1.5),
+                            high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
+                            adaptive_weight=config.get("combine_adaptive", True),
+                            size_based_weight=config.get("combine_size_based", True)
                         )
                         
                         # Výpis metrik
@@ -911,8 +948,6 @@ def run_inference(config):
                         device=device,
                         small_patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
                         small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
-                        use_tta=config.get("use_tta", True),
-                        tta_angle_max=config.get("tta_angle_max", 3),
                         cascaded_mode=config.get("cascaded_mode", "combined"),
                         use_z_adc=config["in_channels"] > 1
                     )
@@ -923,18 +958,52 @@ def run_inference(config):
                 result = ensemble_pred  # Výsledek je průměr binarizovaných predikcí
             else:
                 # Standardní inference s jedním modelem pro malé léze
+                input_paths = [adc_path, z_path]
+                # Načtení vstupních dat
+                volumes = []
+                
+                # Vždy načíst ADC mapu (první v seznamu)
+                adc_path = input_paths[0]
+                sitk_img = sitk.ReadImage(adc_path)
+                np_vol = sitk.GetArrayFromImage(sitk_img).astype(np.float32)
+                volumes.append(np_vol)
+                
+                # Načíst Z-ADC mapu, pouze pokud se používá
+                if config["in_channels"] > 1 and len(input_paths) > 1:
+                    zadc_path = input_paths[1]
+                    try:
+                        sitk_zadc = sitk.ReadImage(zadc_path)
+                        zadc_np = sitk.GetArrayFromImage(sitk_zadc).astype(np.float32)
+                        volumes.append(zadc_np)
+                    except Exception as e:
+                        print(f"Varování: Nelze načíst Z-ADC soubor {zadc_path}: {e}")
+                        print("Inference bude provedena pouze s ADC mapou.")
+                
+                # Vytvoření vstupního tensoru
+                input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
+                
+                # Získání transformací pro TTA, pokud je povoleno
+                tta_transforms = None
+                if config.get("use_tta", True):
+                    tta_transforms = get_tta_transforms(angle_max=config.get("tta_angle_max", 3))
+                
                 result = infer_full_volume_cascaded(
+                    input_vol=input_vol,
                     main_model=main_model,
                     small_lesion_model=small_lesion_model,
-                    input_paths=[adc_path, z_path],
-                    label_path=label_path,
                     device=device,
-                    small_patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
-                    small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
                     use_tta=config.get("use_tta", True),
-                    tta_angle_max=config.get("tta_angle_max", 3),
+                    tta_transforms=tta_transforms,
                     cascaded_mode=config.get("cascaded_mode", "combined"),
-                    use_z_adc=config["in_channels"] > 1
+                    small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                    patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
+                    small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+                    # Parametry pro pokročilou kombinaci predikcí
+                    alpha=config.get("combine_alpha", 0.6),
+                    confidence_boost_factor=config.get("combine_boost_factor", 1.5),
+                    high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
+                    adaptive_weight=config.get("combine_adaptive", True),
+                    size_based_weight=config.get("combine_size_based", True)
                 )
         
         elif config["inference_mode"] == "moe" and expert_model is not None:
@@ -1114,6 +1183,20 @@ def main():
                         help="Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)")
     parser.add_argument("--small_lesion_loss_name", type=str, default="focal_ce_combo",
                         help="Ztrátová funkce pro trénování modelu malých lézí")
+
+    # Parametry pro pokročilou kombinaci predikcí
+    parser.add_argument("--advanced_combine", action="store_true", 
+                        help="Použít pokročilou kombinaci predikcí")
+    parser.add_argument("--combine_alpha", type=float, default=0.6,
+                        help="Základní váha hlavního modelu při kombinaci (0-1)")
+    parser.add_argument("--combine_boost_factor", type=float, default=1.5,
+                        help="Faktor zvýšení váhy pro detekce s vysokou jistotou")
+    parser.add_argument("--combine_high_conf_threshold", type=float, default=0.8,
+                        help="Práh pravděpodobnosti pro klasifikaci jako 'vysoká jistota'")
+    parser.add_argument("--combine_disable_adaptive", action="store_false", dest="combine_adaptive",
+                        help="Vypnout adaptivní váhování podle velikosti a jistoty")
+    parser.add_argument("--combine_disable_size_weighting", action="store_false", dest="combine_size_based",
+                        help="Vypnout váhování podle velikosti léze")
 
     # Aktualizace konfigurace z argumentů
     args = parser.parse_args()

@@ -136,6 +136,35 @@ python main.py --mode inference \
 
 Alternativně můžete upravit a spustit příklad v `examples/inference_example.py`.
 
+### Příklad příkazu pro inferenci s kaskádovým přístupem a pokročilou kombinací predikcí
+
+```bash
+python main.py --mode inference \
+  --adc_folder /cesta/k/testdata/ADC \
+  --z_folder /cesta/k/testdata/ZADC \
+  --label_folder /cesta/k/testdata/Label \
+  --model_path /cesta/k/model/best_model.pth \
+  --small_lesion_model_path /cesta/k/model/small_lesion_model.pth \
+  --in_channels 2 \
+  --out_channels 2 \
+  --use_normalization \
+  --allow_normalize_spacing \
+  --use_tta \
+  --tta_angle_max 3 \
+  --use_cascaded_approach \
+  --cascaded_mode combined \
+  --small_lesion_model attention_unet \
+  --small_lesion_patch_size 16 16 16 \
+  --small_lesion_threshold 0.5 \
+  --small_lesion_max_voxels 50 \
+  --advanced_combine \
+  --combine_alpha 0.6 \
+  --combine_boost_factor 1.5 \
+  --combine_high_conf_threshold 0.8 \
+  --device cuda \
+  --output_dir /cesta/k/vystupu
+```
+
 ## Konfigurace
 
 Projekt používá konfigurační systém, který umožňuje nastavit různé parametry trénování a inference. Výchozí hodnoty jsou definovány v `src/config.py` a mohou být přepsány pomocí argumentů příkazové řádky nebo přímo v kódu.
@@ -194,6 +223,27 @@ Projekt používá konfigurační systém, který umožňuje nastavit různé pa
   - `inference_mode`: Režim inference ("standard" nebo "moe")
   - `use_tta`: Zda používat Test-Time Augmentation
   - `moe_threshold`: Threshold pro přepnutí na expertní model
+
+## Nové funkce pro kaskádovou inferenci a malé léze
+
+### Parametry pro kaskádovou inferenci
+
+- `--use_cascaded_approach`: Aktivovat kaskádový přístup segmentace
+- `--cascaded_mode`: Režim kaskády (`roi_only` nebo `combined`)
+- `--small_lesion_model`: Typ modelu pro malé léze (`unet`, `nnunet`, `small_unet`, `simple_resunet`, `attention_unet`)
+- `--small_lesion_patch_size`: Velikost patche pro model malých lézí (např. 16 16 16)
+- `--small_lesion_threshold`: Práh pro detekci malých lézí (např. 0.5)
+- `--small_lesion_max_voxels`: Maximální počet voxelů pro klasifikaci léze jako "malé" (např. 50)
+- `--small_lesion_large_lesion_sampling_ratio`: Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)
+
+### Parametry pro pokročilou kombinaci predikcí
+
+- `--advanced_combine`: Aktivovat pokročilou kombinaci predikcí
+- `--combine_alpha`: Základní váha hlavního modelu při kombinaci (0-1, výchozí 0.6)
+- `--combine_boost_factor`: Faktor zvýšení váhy pro detekce s vysokou jistotou (výchozí 1.5)
+- `--combine_high_conf_threshold`: Práh pravděpodobnosti pro "vysokou jistotu" (výchozí 0.8)
+- `--combine_disable_adaptive`: Vypnout adaptivní váhování podle velikosti a jistoty detekce
+- `--combine_disable_size_weighting`: Vypnout váhování podle velikosti léze
 
 ## Metriky
 
