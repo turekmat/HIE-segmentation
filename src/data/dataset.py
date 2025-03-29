@@ -325,8 +325,9 @@ class SmallLesionPatchDataset(Dataset):
         use_z_adc=True,
         seed=42,
         specific_files=None,
-        large_lesion_sampling_ratio=0.25,  # Nový parametr pro kontrolu vzorkování velkých lézí
-        preload_volumes=True  # Nový parametr pro předběžné načtení objemů
+        large_lesion_sampling_ratio=0.25,  # Parametr pro kontrolu vzorkování velkých lézí
+        preload_volumes=True,  # Parametr pro předběžné načtení objemů
+        verbose=False  # Parametr pro kontrolu výpisů
     ):
         """
         Args:
@@ -341,9 +342,9 @@ class SmallLesionPatchDataset(Dataset):
             use_z_adc: Zda používat Z-ADC snímky jako druhý kanál
             seed: Seed pro reprodukovatelnost
             specific_files: Slovník obsahující seznamy konkrétních souborů, které mají být použity
-                           {'adc_files': [...], 'z_files': [...], 'lab_files': [...]}
-            large_lesion_sampling_ratio: Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)
+            large_lesion_sampling_ratio: Poměr redukce vzorků z velkých lézí (0-1)
             preload_volumes: Zda načíst objemy do paměti před začátkem tréninku
+            verbose: Zda vypisovat podrobné informace o průběhu
         """
         super().__init__()
         self.adc_folder = adc_folder
@@ -358,6 +359,7 @@ class SmallLesionPatchDataset(Dataset):
         self.seed = seed
         self.large_lesion_sampling_ratio = large_lesion_sampling_ratio
         self.preload_volumes = preload_volumes
+        self.verbose = verbose
         
         # Nastavení seedu pro reprodukovatelnost
         np.random.seed(seed)
@@ -385,6 +387,8 @@ class SmallLesionPatchDataset(Dataset):
         self.volume_cache = {}
         
         # Analýza všech objemů pro identifikaci malých lézí
+        if self.verbose:
+            print(f"Analyzuji {len(self.adc_files)} objemů...")
         self.volume_info = self._analyze_volumes()
         
         # Vytvoření seznamu všech dostupných patchů
@@ -392,42 +396,41 @@ class SmallLesionPatchDataset(Dataset):
         
         # Předběžné načtení objemů do cache pro zrychlení
         if self.preload_volumes:
-            print("\nPředběžné načítání objemů do paměti...")
-            # Zjistíme, které objemy jsou třeba, abychom nenačítali nepotřebné objemy
+            if self.verbose:
+                print("\nPředběžné načítání objemů do paměti...")
+            
+            # Zjistíme, které objemy jsou třeba
             unique_volumes = set([patch[0] for patch in self.all_patches])
             total_volumes = len(unique_volumes)
             
-            print(f"Bude načteno {total_volumes} objemů do paměti.")
+            if self.verbose and total_volumes > 50:
+                print(f"Bude načteno {total_volumes} objemů do paměti.")
+                print("VAROVÁNÍ: Načítá se velký počet objemů. Při problémech s pamětí použijte preload_volumes=False")
             
-            if total_volumes > 50:
-                print("VAROVÁNÍ: Načítá se velký počet objemů. Pokud dojde k problémům s pamětí, zkuste:")
-                print("1. Snížit počet objemů výběrem menší podmnožiny dat")
-                print("2. Znovu spustit s preload_volumes=False")
-            
-            # Načítání objemů po skupinách pro lepší monitoring postupu
+            # Načítání objemů po skupinách
             batch_size = 5
             for i in range(0, total_volumes, batch_size):
                 batch_indices = list(unique_volumes)[i:i+batch_size]
-                print(f"Načítání objemů {i+1}-{min(i+batch_size, total_volumes)} z {total_volumes}...")
+                if self.verbose:
+                    print(f"Načítání objemů {i+1}-{min(i+batch_size, total_volumes)} z {total_volumes}...")
                 
                 for vol_idx in batch_indices:
                     self._load_volume_to_cache(vol_idx)
             
-            print(f"Načteno {len(self.volume_cache)} objemů do paměti.")
+            if self.verbose:
+                print(f"Načteno {len(self.volume_cache)} objemů do paměti.")
         
-        # Výpis statistik o počtu patchů
-        small_lesion_volumes_count = len([info for info in self.volume_info if info['is_small_lesion'] and info['has_lesions']])
-        large_lesion_volumes_count = len([info for info in self.volume_info if not info['is_small_lesion'] and info['has_lesions']])
-        no_lesion_volumes_count = len([info for info in self.volume_info if not info['has_lesions']])
-        
-        print(f"\nStatistika vzorků pro malý model:")
-        print(f"  Celkový počet vzorků: {len(self.all_patches)}")
-        print(f"  Objemy s malými lézemi: {small_lesion_volumes_count}")
-        print(f"  Objemy s velkými lézemi: {large_lesion_volumes_count}")
-        print(f"  Objemy bez lézí: {no_lesion_volumes_count}")
-        print(f"  Vzorky z volimů s malými lézemi: ~{small_lesion_volumes_count * self.patches_per_volume} (zachováno 100%)")
-        print(f"  Vzorky z volimů s velkými lézemi: ~{int(large_lesion_volumes_count * self.patches_per_volume * self.large_lesion_sampling_ratio)} (redukováno na {self.large_lesion_sampling_ratio*100:.0f}%)")
-        print(f"  Vzorky z objemů bez lézí: ~{min(no_lesion_volumes_count * 50, len(self.all_patches) - small_lesion_volumes_count * self.patches_per_volume - int(large_lesion_volumes_count * self.patches_per_volume * self.large_lesion_sampling_ratio))}")
+        # Výpis statistik jen pokud je verbose zapnuto
+        if self.verbose:
+            small_lesion_volumes_count = len([info for info in self.volume_info if info['is_small_lesion'] and info['has_lesions']])
+            large_lesion_volumes_count = len([info for info in self.volume_info if not info['is_small_lesion'] and info['has_lesions']])
+            no_lesion_volumes_count = len([info for info in self.volume_info if not info['has_lesions']])
+            
+            print(f"\nStatistika vzorků pro malý model:")
+            print(f"  Celkový počet vzorků: {len(self.all_patches)}")
+            print(f"  Objemy s malými lézemi: {small_lesion_volumes_count}")
+            print(f"  Objemy s velkými lézemi: {large_lesion_volumes_count}")
+            print(f"  Objemy bez lézí: {no_lesion_volumes_count}")
     
     def _load_volume_to_cache(self, vol_idx):
         """
@@ -470,13 +473,12 @@ class SmallLesionPatchDataset(Dataset):
         volume_info = []
         total_volumes = len(self.adc_files)
         
-        print(f"Analyzuji {total_volumes} objemů...")
-        
         # Zpracování po dávkách pro lepší monitoring
         batch_size = 10
         for batch_start in range(0, total_volumes, batch_size):
             batch_end = min(batch_start + batch_size, total_volumes)
-            print(f"Analýza objemů {batch_start+1}-{batch_end} z {total_volumes}...")
+            if self.verbose:
+                print(f"Analýza objemů {batch_start+1}-{batch_end} z {total_volumes}...")
             
             for i in range(batch_start, batch_end):
                 adc_file = self.adc_files[i]
@@ -545,7 +547,8 @@ class SmallLesionPatchDataset(Dataset):
         large_lesion_volumes = [info for info in self.volume_info if not info['is_small_lesion'] and info['has_lesions']]
         no_lesion_volumes = [info for info in self.volume_info if not info['has_lesions']]
         
-        print(f"Zpracovávám {len(small_lesion_volumes)} objemů s malými lézemi...")
+        if self.verbose:
+            print(f"Zpracovávám {len(small_lesion_volumes)} objemů s malými lézemi...")
         
         # Nejprve zpracujeme objemy s malými lézemi - zachováváme všechny
         for vol_info in small_lesion_volumes:
@@ -568,7 +571,8 @@ class SmallLesionPatchDataset(Dataset):
             )
             all_patches.extend(vol_patches)
         
-        print(f"Zpracovávám {len(large_lesion_volumes)} objemů s velkými lézemi (redukovaný počet vzorků)...")
+        if self.verbose:
+            print(f"Zpracovávám {len(large_lesion_volumes)} objemů s velkými lézemi (redukovaný počet vzorků)...")
         
         # Zpracování objemů s velkými lézemi - redukovaný počet vzorků
         if large_lesion_volumes:
@@ -595,7 +599,8 @@ class SmallLesionPatchDataset(Dataset):
                 )
                 all_patches.extend(vol_patches)
         
-        print(f"Zpracovávám {len(no_lesion_volumes)} objemů bez lézí (negativní příklady)...")
+        if self.verbose:
+            print(f"Zpracovávám {len(no_lesion_volumes)} objemů bez lézí (negativní příklady)...")
         
         # Přidání omezeného počtu vzorků z objemů bez lézí (negativní příklady)
         if no_lesion_volumes:
@@ -622,7 +627,8 @@ class SmallLesionPatchDataset(Dataset):
         # Náhodně promícháme patche
         np.random.shuffle(all_patches)
         
-        print(f"Celkem vygenerováno {len(all_patches)} patchů")
+        if self.verbose:
+            print(f"Celkem vygenerováno {len(all_patches)} patchů")
         
         return all_patches
     
@@ -781,19 +787,19 @@ class SmallLesionPatchDataset(Dataset):
             # Implementace základních 3D augmentací
             # Náhodné převrácení
             if np.random.random() > 0.5:
-                input_data = input_data[:, :, :, ::-1]  # Převrácení podél x osy
-                lab_patch = lab_patch[:, :, ::-1]
+                input_data = input_data[:, :, :, ::-1].copy()  # Převrácení podél x osy
+                lab_patch = lab_patch[:, :, ::-1].copy()
             
             if np.random.random() > 0.5:
-                input_data = input_data[:, :, ::-1, :]  # Převrácení podél y osy
-                lab_patch = lab_patch[:, ::-1, :]
+                input_data = input_data[:, :, ::-1, :].copy()  # Převrácení podél y osy
+                lab_patch = lab_patch[:, ::-1, :].copy()
             
             if np.random.random() > 0.5:
-                input_data = input_data[:, ::-1, :, :]  # Převrácení podél z osy
-                lab_patch = lab_patch[::-1, :, :]
+                input_data = input_data[:, ::-1, :, :].copy()  # Převrácení podél z osy
+                lab_patch = lab_patch[::-1, :, :].copy()
         
-        # Převod na tensor
-        input_tensor = torch.from_numpy(input_data)
-        label_tensor = torch.from_numpy(lab_patch).long()
+        # Převod na tensor - zde přidáme .copy() pro jistotu, že výsledné pole má pozitivní stride
+        input_tensor = torch.from_numpy(input_data.copy())
+        label_tensor = torch.from_numpy(lab_patch.copy()).long()
         
         return input_tensor, label_tensor 
