@@ -793,8 +793,8 @@ def infer_full_volume_cascaded(
     
     print("\n===== KASKÁDOVÁ INFERENCE =====")
     print(f"Režim: {cascaded_mode}")
-    print(f"Vstupní soubory: {input_vol}")
-    print(f"TTA: {'Ano' if use_tta else 'Ne'}, Max úhel: {tta_transforms if use_tta else 'N/A'}")
+    # Omezení výpisu velkých matic
+    print(f"TTA: {'Ano' if use_tta else 'Ne'}, Max úhel: {len(tta_transforms) if use_tta else 'N/A'}")
     print(f"Model malých lézí - Threshold: {small_lesion_threshold}")
     
     main_model.eval()
@@ -840,7 +840,7 @@ def infer_full_volume_cascaded(
     small_lesion_prob_map = np.zeros((2, *input_vol.shape[1:]))  # Two channels for binary segmentation
     small_lesion_count = np.zeros((1, *input_vol.shape[1:]))     # Count for averaging
     
-    for pred, (z_start, z_end, y_start, y_end, x_start, x_end) in patches_with_preds:
+    for pred, (z_start, y_start, x_start, z_end, y_end, x_end) in patches_with_preds:
         small_lesion_prob_map[:, z_start:z_end, y_start:y_end, x_start:x_end] += pred
         small_lesion_count[0, z_start:z_end, y_start:y_end, x_start:x_end] += 1
     
