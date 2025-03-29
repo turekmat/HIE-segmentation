@@ -1057,7 +1057,7 @@ def infer_full_volume_cascaded(
             print(f"Kombinovaný režim: Pokročilé spojení predikcí hlavního modelu a modelu malých lézí")
         
         # Použití pokročilé funkce pro kombinaci predikcí
-        final_pred = advanced_combine_predictions(
+        combined_prob, final_pred = advanced_combine_predictions(
             main_pred_probs=standalone_probs,
             small_lesion_probs=small_lesion_prob_map,
             alpha=alpha,
@@ -1412,7 +1412,7 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
             print(f"Kombinovaný režim: Provádím pokročilou kombinaci predikcí...")
         
         # Použití pokročilé funkce pro kombinaci predikcí
-        final_pred = advanced_combine_predictions(
+        combined_prob, final_pred = advanced_combine_predictions(
             main_pred_probs=standard_pred_probs,
             small_lesion_probs=small_lesion_prob_map,
             alpha=alpha,
