@@ -955,7 +955,8 @@ def infer_full_volume_cascaded(
             
             for transform in tta_transforms:
                 # Aplikace transformace
-                transformed_input = transform(input_tensor)
+                aug_vol = apply_tta_transform(input_vol, transform)
+                transformed_input = torch.from_numpy(aug_vol).unsqueeze(0).to(device).float()
                 
                 # Inference
                 logits = main_model(transformed_input)
@@ -964,22 +965,20 @@ def infer_full_volume_cascaded(
                 probs = torch.sigmoid(logits)
                 
                 # Inverzní transformace predikce
-                inv_transform = transform.inverse
-                inv_probs = inv_transform(probs)
-                
-                preds_list.append(inv_probs)
+                inv_probs = invert_tta_transform(probs.cpu().numpy()[0], transform)
+                preds_list.append(torch.from_numpy(inv_probs).unsqueeze(0))
             
             # Průměrování predikcí
-            mean_probs = torch.mean(torch.stack(preds_list), dim=0)
+            mean_probs = torch.mean(torch.cat(preds_list, dim=0), dim=0)
             
             # Převod na binární predikci
-            standalone_probs = mean_probs.cpu().numpy()[0]  # [C, D, H, W]
+            standalone_probs = mean_probs.cpu().numpy()  # [C, D, H, W]
             standalone_pred = (standalone_probs[1] > 0.5).astype(np.uint8)
         else:
             # Standardní inference bez TTA
             logits = main_model(input_tensor)
             probs = torch.sigmoid(logits)
-            standalone_probs = probs.cpu().numpy()[0]  # [C, D, H, W]
+            standalone_probs = probs.cpu().numpy()  # [C, D, H, W]
             standalone_pred = (standalone_probs[1] > 0.5).astype(np.uint8)
     
     standalone_inference_time = time.time() - standalone_inference_start
@@ -1296,7 +1295,8 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
             
             for transform in tta_transforms:
                 # Aplikace transformace
-                transformed_input = transform(input_tensor)
+                aug_vol = apply_tta_transform(input_vol, transform)
+                transformed_input = torch.from_numpy(aug_vol).unsqueeze(0).to(device).float()
                 
                 # Inference
                 logits = main_model(transformed_input)
@@ -1305,13 +1305,11 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
                 probs = torch.sigmoid(logits)
                 
                 # Inverzní transformace predikce
-                inv_transform = transform.inverse
-                inv_probs = inv_transform(probs)
-                
-                preds_list.append(inv_probs)
+                inv_probs = invert_tta_transform(probs.cpu().numpy()[0], transform)
+                preds_list.append(torch.from_numpy(inv_probs).unsqueeze(0))
             
             # Průměrování predikcí
-            mean_probs = torch.mean(torch.stack(preds_list), dim=0)
+            mean_probs = torch.mean(torch.cat(preds_list, dim=0), dim=0)
             
             # Převod na binární predikci
             standard_pred_probs = mean_probs.cpu().numpy()[0]  # [C, D, H, W]
