@@ -1225,3 +1225,327 @@ def infer_full_volume_cascaded(
     }
     
     return result
+
+
+def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, device="cuda", 
+                              use_tta=True, tta_transforms=None, lab_vol=None,
+                              cascaded_mode="combined", small_lesion_threshold=0.5,
+                              patch_size=(16, 16, 16), small_lesion_max_voxels=50,
+                              alpha=0.6, confidence_boost_factor=1.5, high_conf_threshold=0.8,
+                              adaptive_weight=True, size_based_weight=True,
+                              use_feature_fusion=True, input_paths=None, label_path=None, 
+                              verbose=False, training_mode="full_volume", sw_overlap=0.5):
+    """
+    Provede inferenci na celém objemu s vylepšeným kaskádovým přístupem.
+    Tento přístup využívá AttentionResUNet model s volitelnou feature fusion.
+
+    Args:
+        input_vol: Vstupní objem
+        main_model: Hlavní SwinUNETR model
+        small_model: Model pro malé léze (AttentionResUNet)
+        device: Zařízení pro výpočet (cuda nebo cpu)
+        use_tta: Použít Test-Time Augmentation
+        tta_transforms: Transformace pro TTA
+        lab_vol: Ground truth maska pro výpočet metrik (volitelné)
+        cascaded_mode: Režim kombinování výsledků
+        small_lesion_threshold: Práh pro detekci malých lézí
+        patch_size: Velikost patche pro detekci malých lézí
+        small_lesion_max_voxels: Maximální počet voxelů pro klasifikaci léze jako 'malé'
+        alpha: Váha pro hlavní model při kombinaci výsledků
+        confidence_boost_factor: Faktor zvýšení váhy pro detekce s vysokou jistotou
+        high_conf_threshold: Práh pravděpodobnosti pro klasifikaci jako 'vysoká jistota'
+        adaptive_weight: Použít adaptivní váhování založené na pravděpodobnostech
+        size_based_weight: Použít váhování založené na velikosti léze
+        use_feature_fusion: Použít feature fusion z hlavního modelu do AttentionResUNet
+        input_paths: Seznam cest ke vstupním souborům
+        label_path: Cesta ke ground truth souboru
+        verbose: Kontroluje množství výpisů během inference
+        training_mode: Režim tréninku pro kompatibilitu s validate_one_epoch
+        sw_overlap: Překrytí sliding window pro patch-based inferenci
+        
+    Returns:
+        dict: Slovník s výsledky segmentace a metrikami
+    """
+    # Začátek měření času
+    inference_start = time.time()
+    lab_np = lab_vol  # Pro kompatibilitu s pojmenováním v této funkci
+    
+    # Inicializace modelu a použití feature fusion, pokud je požadováno
+    if verbose:
+        print(f"\n===== VYLEPŠENÁ KASKÁDOVÁ INFERENCE =====")
+        print(f"Feature Fusion: {'Ano' if use_feature_fusion else 'Ne'}")
+        print(f"TTA: {'Ano' if use_tta else 'Ne'}")
+    
+    # Převedení vstupu na tensor
+    input_tensor = torch.from_numpy(input_vol).unsqueeze(0).to(device).float()
+    
+    main_model.eval()
+    small_model.eval()
+    
+    # 1. KROK: Inference s hlavním modelem (SwinUNETR)
+    standard_inference_start = time.time()
+    if verbose:
+        print("\n===== Inference s hlavním modelem (SwinUNETR) =====")
+    
+    standard_pred_probs = None
+    standard_pred_binary = None
+    
+    with torch.no_grad():
+        if training_mode == "patch":
+            try:
+                # Import optimalizovaného sliding window
+                from monai.inferers import sliding_window_inference
+                
+                # Použít optimalizovaný sliding window
+                logits = sliding_window_inference(
+                    inputs=input_tensor, 
+                    roi_size=patch_size, 
+                    sw_batch_size=1, 
+                    predictor=main_model,
+                    overlap=sw_overlap,
+                    mode="gaussian",  # Pro vážené průměrování překrývajících se oblastí
+                    device=device
+                )
+            except Exception as e:
+                print(f"Chyba při sliding window inference: {e}")
+                print("Zkouším zpracovat vstup najednou...")
+                logits = main_model(input_tensor)
+        else:
+            # Full volume inference
+            logits = main_model(input_tensor)
+        
+        # Převod logitů na pravděpodobnosti pomocí sigmoid
+        probs = torch.sigmoid(logits)
+        
+        if use_tta and tta_transforms:
+            # Použití TTA pro hlavní model
+            preds_list = [probs.cpu()]  # Include the base prediction
+            
+            for transform in tta_transforms:
+                # Aplikace transformace
+                aug_vol = apply_tta_transform(input_vol, transform)
+                transformed_input = torch.from_numpy(aug_vol).unsqueeze(0).to(device).float()
+                
+                # Inference
+                if training_mode == "patch":
+                    try:
+                        from monai.inferers import sliding_window_inference
+                        aug_logits = sliding_window_inference(
+                            inputs=transformed_input, 
+                            roi_size=patch_size, 
+                            sw_batch_size=1, 
+                            predictor=main_model,
+                            overlap=sw_overlap,
+                            mode="gaussian",
+                            device=device
+                        )
+                    except Exception as e:
+                        print(f"Chyba při TTA sliding window inference: {e}")
+                        aug_logits = main_model(transformed_input)
+                else:
+                    aug_logits = main_model(transformed_input)
+                
+                # Převod logitů na pravděpodobnosti pomocí sigmoid
+                aug_probs = torch.sigmoid(aug_logits)
+                
+                # Inverzní transformace predikce
+                inv_probs = invert_tta_transform(aug_probs.cpu().numpy()[0], transform)
+                preds_list.append(torch.from_numpy(inv_probs).unsqueeze(0))
+            
+            # Průměrování predikcí
+            mean_probs = torch.mean(torch.cat(preds_list, dim=0), dim=0)
+            
+            # Převod na binární predikci
+            standard_pred_probs = mean_probs.cpu().numpy()  # [C, D, H, W]
+            standard_pred_binary = (standard_pred_probs[1] > 0.5).astype(np.uint8)
+        else:
+            # Standardní inference bez TTA
+            standard_pred_probs = probs.cpu().numpy()[0]  # [C, D, H, W]
+            standard_pred_binary = (standard_pred_probs[1] > 0.5).astype(np.uint8)
+    
+    standard_inference_time = time.time() - standard_inference_start
+    main_voxels = np.sum(standard_pred_binary > 0)
+    
+    if verbose:
+        print(f"Inference s hlavním modelem dokončena za {standard_inference_time:.2f}s")
+        print(f"Detekováno {main_voxels} pozitivních voxelů hlavním modelem")
+    
+    # 2. KROK: Detekce malých lézí s modelem pro malé léze
+    small_model_start = time.time()
+    if verbose:
+        print("\n===== Detekce malých lézí s AttentionResUNet =====")
+    
+    # Extrakce malých patchů pro model malých lézí
+    patches_with_coords = extract_small_patches(input_vol, patch_size, overlap=0.5)
+    if verbose:
+        print(f"Extrakce patchů: {len(patches_with_coords)} patchů o velikosti {patch_size}")
+    
+    patches_with_preds = []
+    
+    # Batch processing pro rychlejší inferenci
+    batch_size = 32
+    for i in range(0, len(patches_with_coords), batch_size):
+        batch_patches = []
+        batch_coords = []
+        
+        # Vytvoření dávky
+        for j in range(i, min(i + batch_size, len(patches_with_coords))):
+            patch, coords = patches_with_coords[j]
+            batch_patches.append(patch)
+            batch_coords.append(coords)
+        
+        # Konverze na tensor
+        batch_tensor = torch.from_numpy(np.array(batch_patches)).to(device).float()
+        
+        # Inference
+        with torch.no_grad():
+            batch_preds = small_model(batch_tensor)
+            batch_preds = torch.sigmoid(batch_preds)
+        
+        # Uložení predikcí s koordináty
+        batch_preds_np = batch_preds.cpu().numpy()
+        for pred, coords in zip(batch_preds_np, batch_coords):
+            patches_with_preds.append((pred, coords))
+    
+    # Rekonstrukce pravděpodobnostní mapy z malých patchů
+    if verbose:
+        print("Rekonstrukce mapy pravděpodobnosti malých lézí...")
+    small_lesion_prob_map = reconstruct_from_patches(patches_with_preds, input_vol.shape, out_channels=2)
+    
+    # Vytvoření binární masky pro malé léze
+    if isinstance(small_lesion_prob_map[1], torch.Tensor):
+        small_lesion_binary = (small_lesion_prob_map[1].detach().cpu().numpy() > small_lesion_threshold).astype(np.uint8)
+    else:
+        small_lesion_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.uint8)
+    
+    small_model_time = time.time() - small_model_start
+    small_voxels = np.sum(small_lesion_binary > 0)
+    
+    if verbose:
+        print(f"Detekce malých lézí dokončena za {small_model_time:.2f}s")
+        print(f"Detekováno {small_voxels} pozitivních voxelů modelem pro malé léze")
+    
+    # 3. KROK: Kombinace predikcí
+    combination_start = time.time()
+    if verbose:
+        print("\n===== Kombinace predikcí obou modelů =====")
+    
+    # Inicializace výsledné predikce
+    final_pred = np.zeros_like(standard_pred_binary)
+    
+    # Různé režimy kombinování výsledků
+    if cascaded_mode == "roi_only":
+        # V tomto režimu nahradíme oblasti ROI predikcí z malého modelu
+        final_pred = standard_pred_binary.copy()
+        
+        # Vytvoření ROI masky pro hlavní model na základě malých lézí
+        if small_voxels > 0:
+            from scipy import ndimage
+            # Získání ROI dilatací masky malých lézí
+            roi_mask = ndimage.binary_dilation(small_lesion_binary, iterations=5).astype(np.uint8)
+            # Nahrazení ROI oblasti predikcí z modelu malých lézí
+            final_pred[roi_mask > 0] = small_lesion_binary[roi_mask > 0]
+            
+            if verbose:
+                print(f"ROI režim: Nahrazeno {np.sum(roi_mask)} voxelů v ROI predikcí z modelu pro malé léze")
+    else:
+        # Kombinovaný režim: pokročilá kombinace predikcí
+        if verbose:
+            print(f"Kombinovaný režim: Provádím pokročilou kombinaci predikcí...")
+        
+        # Použití pokročilé funkce pro kombinaci predikcí
+        combined_prob, final_pred = advanced_combine_predictions(
+            main_pred_probs=standard_pred_probs,
+            small_lesion_probs=small_lesion_prob_map,
+            alpha=alpha,
+            small_lesion_threshold=small_lesion_threshold,
+            confidence_boost_factor=confidence_boost_factor,
+            high_conf_threshold=high_conf_threshold,
+            adaptive_weight=adaptive_weight,
+            size_based_weight=size_based_weight
+        )
+    
+    combination_time = time.time() - combination_start
+    if verbose:
+        print(f"Kombinace predikcí dokončena za {combination_time:.2f}s")
+    
+    # Výpočet metrik, pokud je k dispozici ground truth
+    metrics = {}
+    standalone_metrics = {}
+    
+    if lab_np is not None:
+        from src.utils.metrics import compute_all_metrics
+        
+        # Vždy vypíšeme srovnání metrik, bez ohledu na verbose parametr
+        print(f"\n===== SROVNÁNÍ METRIK STANDARDNÍ VS. KASKÁDOVÉ METODY =====")
+        
+        # Metriky pro standardní model
+        standalone_metrics = compute_all_metrics(standard_pred_binary, lab_np, include_surface_metrics=True)
+        print(f"Standardní model (pouze SwinUNETR):")
+        print(f"  DICE: {standalone_metrics.get('dice', 0):.4f}")
+        print(f"  MASD: {standalone_metrics.get('masd', 0):.4f}")
+        print(f"  NSD: {standalone_metrics.get('nsd', 0):.4f}")
+        
+        # Metriky pro kaskádový model
+        metrics = compute_all_metrics(final_pred, lab_np, include_surface_metrics=True)
+        print(f"\nKaskádový model (kombinovaný přístup):")
+        print(f"  DICE: {metrics.get('dice', 0):.4f}")
+        print(f"  MASD: {metrics.get('masd', 0):.4f}")
+        print(f"  NSD: {metrics.get('nsd', 0):.4f}")
+        
+        # Srovnání hlavních metrik
+        dice_diff = metrics.get("dice", 0) - standalone_metrics.get("dice", 0)
+        masd_diff = standalone_metrics.get("masd", 0) - metrics.get("masd", 0)  # MASD nižší je lepší
+        nsd_diff = metrics.get("nsd", 0) - standalone_metrics.get("nsd", 0)
+        
+        print(f"\nRozdíl v metrikách (kaskádový - standardní):")
+        print(f"  DICE: {dice_diff:.4f} {'(zlepšení)' if dice_diff > 0 else '(zhoršení)' if dice_diff < 0 else '(beze změny)'}")
+        print(f"  MASD: {-masd_diff:.4f} {'(zlepšení)' if masd_diff > 0 else '(zhoršení)' if masd_diff < 0 else '(beze změny)'}")
+        print(f"  NSD: {nsd_diff:.4f} {'(zlepšení)' if nsd_diff > 0 else '(zhoršení)' if nsd_diff < 0 else '(beze změny)'}")
+
+    # Získání ID pacienta, pokud je k dispozici label_path
+    patient_id = None
+    if label_path:
+        try:
+            from src.data.dataset import get_subject_id_from_filename
+            patient_id = get_subject_id_from_filename(label_path)
+        except:
+            # Fallback pokud není k dispozici funkce get_subject_id_from_filename
+            patient_id = os.path.basename(label_path).split('_')[0]
+    
+    # Celkový čas inference
+    total_time = time.time() - inference_start
+    
+    # Vytvoření výsledného slovníku
+    result = {
+        "prediction": final_pred,
+        "standalone_prediction": standard_pred_binary,  # Přidána samostatná predikce hlavního modelu
+        "reference": lab_np,  # Přidání reference
+        "input_paths": input_paths if input_paths else [],  # Přidání cest ke vstupním souborům
+        "label_path": label_path,  # Přidání cesty k ground truth souboru
+        "metrics": metrics,
+        "standalone_metrics": standalone_metrics,  # Přidány metriky samostatného modelu
+        "small_lesion_metrics": {},
+        "timing": {
+            "small_lesion_model": small_model_time,
+            "main_model": standard_inference_time,
+            "combination": combination_time,
+            "total": total_time
+        }
+    }
+    
+    # Přidání patient_id, pokud bylo získáno
+    if patient_id:
+        result['patient_id'] = patient_id
+    
+    # Přidání diagnostických informací
+    result["diagnostics"] = {
+        "processed_shape": input_vol.shape,
+        "foreground_voxels": np.sum(final_pred > 0),
+        "standalone_foreground_voxels": np.sum(standard_pred_binary > 0),
+        "small_lesion_foreground_voxels": np.sum(small_lesion_binary > 0),
+        "cascaded_mode": cascaded_mode,
+        "use_feature_fusion": use_feature_fusion
+    }
+    
+    return result
