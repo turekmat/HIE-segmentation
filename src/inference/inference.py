@@ -760,7 +760,8 @@ def infer_full_volume_cascaded(
     confidence_boost_factor=1.5,
     high_conf_threshold=0.8,
     adaptive_weight=True,
-    size_based_weight=True
+    size_based_weight=True,
+    lab_np=None  # Added lab_np parameter with default value of None
 ):
     """
     Provádí kaskádovanou inferenci na celém objemu s využitím hlavního modelu a modelu pro malé léze.
@@ -783,6 +784,7 @@ def infer_full_volume_cascaded(
         high_conf_threshold (float): Práh pro klasifikaci jako velmi jistá detekce
         adaptive_weight (bool): Zda použít adaptivní váhování podle velikosti a jistoty detekce
         size_based_weight (bool): Zda použít váhování podle velikosti léze
+        lab_np (numpy.ndarray, optional): Ground truth maska, pokud je k dispozici
         
     Returns:
         numpy.ndarray: Finální predikce jako binární maska
@@ -799,6 +801,9 @@ def infer_full_volume_cascaded(
     
     main_model.eval()
     small_lesion_model.eval()
+    
+    # Příprava input_tensor jednou na začátku
+    input_tensor = torch.from_numpy(input_vol).unsqueeze(0).to(device).float()
     
     # 1. Krok: Detekce malých lézí pomocí malého modelu
     print("\n===== 1. KROK: DETEKCE MALÝCH LÉZÍ =====")
@@ -915,8 +920,12 @@ def infer_full_volume_cascaded(
     print("\n===== 2. KROK: FINÁLNÍ SEGMENTACE S HLAVNÍM MODELEM =====")
     main_model_time_start = time.time()
     
-    # Nejprve spočítáme standardní inferenci s hlavním modelem pro srovnání
-    standard_pred = None
+    # Nejprve provedeme samostatnou inferenci s hlavním modelem pro porovnání
+    print("\n===== Inference s hlavním modelem (SwinUNETR) =====")
+    standalone_inference_start = time.time()
+    
+    standalone_pred = None
+    standalone_probs = None
     with torch.no_grad():
         if use_tta:
             # TTA inference hlavního modelu
@@ -934,11 +943,60 @@ def infer_full_volume_cascaded(
                 avg_probs_main += inv_probs
             
             avg_probs_main /= len(tta_transforms)
-            standard_pred = np.argmax(avg_probs_main, axis=0)
+            standalone_probs = avg_probs_main
+            standalone_pred = np.argmax(avg_probs_main, axis=0)
         else:
             # Standardní inference
             pred_logits = main_model(input_tensor)
-            standard_pred = torch.argmax(pred_logits, dim=1).cpu().numpy()[0]
+            softmax = torch.nn.Softmax(dim=1)
+            probs = softmax(pred_logits)
+            standalone_probs = probs.cpu().numpy()[0]
+            standalone_pred = np.argmax(probs, dim=1).cpu().numpy()[0]
+    
+    standalone_inference_time = time.time() - standalone_inference_start
+    
+    # Analýza výsledků samostatného hlavního modelu
+    standalone_voxels = np.sum(standalone_pred > 0)
+    print(f"Samostatná inference hlavního modelu dokončena za {standalone_inference_time:.2f}s")
+    print(f"Detekováno {standalone_voxels} pozitivních voxelů hlavním modelem")
+    
+    if standalone_voxels > 0:
+        from skimage.measure import label, regionprops
+        labeled_standalone = label(standalone_pred)
+        regions_standalone = regionprops(labeled_standalone)
+        
+        print(f"Počet spojitých lézí detekovaných hlavním modelem: {len(regions_standalone)}")
+        
+        if regions_standalone:
+            lesion_sizes = [region.area for region in regions_standalone]
+            print(f"Min. velikost léze: {min(lesion_sizes)}, Max. velikost léze: {max(lesion_sizes)}, Průměr: {sum(lesion_sizes)/len(lesion_sizes):.1f} voxelů")
+            
+            # Distribuce velikostí lézí detekovaných hlavním modelem
+            size_buckets = {
+                "1-5 voxelů": 0,
+                "6-20 voxelů": 0,
+                "21-50 voxelů": 0,
+                ">50 voxelů": 0
+            }
+            
+            for size in lesion_sizes:
+                if 1 <= size <= 5:
+                    size_buckets["1-5 voxelů"] += 1
+                elif 6 <= size <= 20:
+                    size_buckets["6-20 voxelů"] += 1
+                elif 21 <= size <= 50:
+                    size_buckets["21-50 voxelů"] += 1
+                else:
+                    size_buckets[">50 voxelů"] += 1
+            
+            print("\nDistribuce velikostí lézí detekovaných hlavním modelem:")
+            for category, count in size_buckets.items():
+                percentage = (count / len(regions_standalone)) * 100
+                print(f"  {category}: {count} lézí ({percentage:.1f}%)")
+    
+    # Nyní provedeme kombinovanou inferenci podle zvoleného režimu
+    print("\n===== Kombinovaná kaskádová inference =====")
+    combined_inference_start = time.time()
     
     # Kombinace vstupního obrazu s mapou malých lézí (přidání jako další kanál)
     if cascaded_mode == "roi_only":
@@ -978,33 +1036,8 @@ def infer_full_volume_cascaded(
         # Pokročilá kombinace predikcí hlavního modelu a modelu malých lézí
         print(f"Kombinovaný režim: Pokročilé spojení predikcí hlavního modelu a modelu malých lézí")
         
-        # Získání pravděpodobnostních map místo binárních predikcí
-        # Pro hlavní model
-        if use_tta:
-            # TTA inference hlavního modelu pro získání pravděpodobnostních map
-            avg_probs_main = np.zeros((2, *input_vol.shape[1:]))  # Background a foreground kanály
-            for transform in tta_transforms:
-                aug_vol = apply_tta_transform(input_vol, transform)
-                aug_tensor = torch.from_numpy(aug_vol).unsqueeze(0).to(device).float()
-                
-                pred_logits = main_model(aug_tensor)
-                softmax = torch.nn.Softmax(dim=1)
-                probs = softmax(pred_logits)
-                probs_np = probs.cpu().numpy()[0]
-                inv_probs = invert_tta_transform(probs_np, transform)
-                avg_probs_main += inv_probs
-            
-            avg_probs_main /= len(tta_transforms)
-            main_pred_probs = avg_probs_main
-        else:
-            # Standardní inference
-            pred_logits = main_model(input_tensor)
-            softmax = torch.nn.Softmax(dim=1)
-            probs = softmax(pred_logits)
-            main_pred_probs = probs.cpu().numpy()[0]
-        
-        # Pro model malých lézí - převedení na pravděpodobnostní mapu
-        # Již máme small_lesion_prob_map z předchozího kroku inference
+        # Pro hlavní model využijeme již vypočtené predikce ze samostatné inference
+        main_pred_probs = standalone_probs
         
         # Použití pokročilé funkce pro kombinaci
         print(f"Používám pokročilou funkci pro kombinaci predikcí...")
@@ -1040,74 +1073,95 @@ def infer_full_volume_cascaded(
             advanced_added = np.sum((final_pred > 0) & (standard_pred_binary == 0) & (small_pred_binary == 0))
             if advanced_added > 0:
                 print(f"  Pokročilá kombinace přidala: {advanced_added} voxelů ({advanced_added/total_voxels*100:.1f}%)")
-        
-        # Uložíme si original binary predikce pro pozdější analýzu
-        standard_pred = standard_pred_binary
     
+    combined_inference_time = time.time() - combined_inference_start
     main_model_time = time.time() - main_model_time_start
-    print(f"Inference hlavního modelu dokončena za {main_model_time:.2f}s")
+    print(f"Kaskádová inference dokončena za {combined_inference_time:.2f}s")
     
     # Analýza výsledků hlavního modelu a kombinované predikce
-    if standard_pred is not None:
-        standard_voxels = np.sum(standard_pred > 0)
-        final_voxels = np.sum(final_pred > 0)
+    print(f"\n===== SROVNÁNÍ STANDARDNÍ VS. KASKÁDOVÉ PREDIKCE =====")
+    standalone_voxels = np.sum(standalone_pred > 0)
+    final_voxels = np.sum(final_pred > 0)
+    
+    print(f"Standardní model: {standalone_voxels} foreground voxelů")
+    print(f"Kaskádový model: {final_voxels} foreground voxelů")
+    
+    # Výpočet přírůstku/úbytku voxelů
+    if final_voxels > standalone_voxels:
+        added_voxels = final_voxels - standalone_voxels
+        print(f"Kaskádou přidáno: {added_voxels} voxelů ({added_voxels/max(1,final_voxels)*100:.1f}% celkové predikce)")
+    elif standalone_voxels > final_voxels:
+        removed_voxels = standalone_voxels - final_voxels
+        print(f"Kaskádou odebráno: {removed_voxels} voxelů ({removed_voxels/max(1,standalone_voxels)*100:.1f}% původní predikce)")
+    
+    # Analýza distribuce velikostí lézí v obou predikcích
+    from skimage.measure import label, regionprops
+    labeled_standalone = label(standalone_pred > 0)
+    labeled_final = label(final_pred > 0)
+    
+    regions_standalone = regionprops(labeled_standalone)
+    regions_final = regionprops(labeled_final)
+    
+    print(f"\nPočet lézí ve standardní predikci: {len(regions_standalone)}")
+    print(f"Počet lézí v kaskádové predikci: {len(regions_final)}")
+    
+    if len(regions_standalone) > 0 and len(regions_final) > 0:
+        standalone_sizes = [region.area for region in regions_standalone]
+        final_sizes = [region.area for region in regions_final]
         
-        print(f"\n===== SROVNÁNÍ STANDARDNÍ VS. KASKÁDOVÉ PREDIKCE =====")
-        print(f"Standardní model: {standard_voxels} foreground voxelů")
-        print(f"Kaskádový model: {final_voxels} foreground voxelů")
+        # Srovnání velikostí
+        print(f"\nStandardní predikce - velikosti lézí:")
+        print(f"  Min: {min(standalone_sizes)}, Max: {max(standalone_sizes)}, Průměr: {sum(standalone_sizes)/len(standalone_sizes):.1f}")
         
-        if final_voxels > standard_voxels:
-            added_voxels = final_voxels - standard_voxels
-            print(f"Kaskádou přidáno: {added_voxels} voxelů ({added_voxels/max(1,final_voxels)*100:.1f}% celkové predikce)")
+        print(f"Kaskádová predikce - velikosti lézí:")
+        print(f"  Min: {min(final_sizes)}, Max: {max(final_sizes)}, Průměr: {sum(final_sizes)/len(final_sizes):.1f}")
         
-        # Analýza distribuce velikostí lézí v obou predikcích
-        from skimage.measure import label, regionprops
-        labeled_standard = label(standard_pred > 0)
-        labeled_final = label(final_pred > 0)
+        # Počet malých lézí v obou predikcích
+        standalone_small = len([size for size in standalone_sizes if size <= 50])
+        final_small = len([size for size in final_sizes if size <= 50])
         
-        regions_standard = regionprops(labeled_standard)
-        regions_final = regionprops(labeled_final)
-        
-        print(f"\nPočet lézí ve standardní predikci: {len(regions_standard)}")
-        print(f"Počet lézí v kaskádové predikci: {len(regions_final)}")
-        
-        if len(regions_standard) > 0 and len(regions_final) > 0:
-            standard_sizes = [region.area for region in regions_standard]
-            final_sizes = [region.area for region in regions_final]
-            
-            # Srovnání velikostí
-            print(f"\nStandardní predikce - velikosti lézí:")
-            print(f"  Min: {min(standard_sizes)}, Max: {max(standard_sizes)}, Průměr: {sum(standard_sizes)/len(standard_sizes):.1f}")
-            
-            print(f"Kaskádová predikce - velikosti lézí:")
-            print(f"  Min: {min(final_sizes)}, Max: {max(final_sizes)}, Průměr: {sum(final_sizes)/len(final_sizes):.1f}")
-            
-            # Počet malých lézí v obou predikcích
-            standard_small = len([size for size in standard_sizes if size <= 50])
-            final_small = len([size for size in final_sizes if size <= 50])
-            
-            print(f"\nMalé léze (<=50 voxelů):")
-            print(f"  Standardní predikce: {standard_small} lézí ({standard_small/len(regions_standard)*100:.1f}%)")
-            print(f"  Kaskádová predikce: {final_small} lézí ({final_small/len(regions_final)*100:.1f}%)")
-            print(f"  Rozdíl: {final_small - standard_small} lézí")
+        print(f"\nMalé léze (<=50 voxelů):")
+        print(f"  Standardní predikce: {standalone_small} lézí ({standalone_small/len(regions_standalone)*100:.1f}%)")
+        print(f"  Kaskádová predikce: {final_small} lézí ({final_small/len(regions_final)*100:.1f}%)")
+        print(f"  Rozdíl: {final_small - standalone_small} lézí")
     
     # Výpočet metrik, pokud je k dispozici ground truth
     metrics = {}
+    standalone_metrics = {}
+    
     if lab_np is not None:
         from src.utils.metrics import compute_all_metrics
-        metrics = compute_all_metrics(final_pred, lab_np, include_surface_metrics=True)
+        
         print(f"\n===== METRIKY =====")
+        
+        # Metriky pro standardní model
+        standalone_metrics = compute_all_metrics(standalone_pred, lab_np, include_surface_metrics=True)
+        print(f"Standardní model (pouze SwinUNETR):")
+        for metric_name, metric_value in standalone_metrics.items():
+            print(f"  {metric_name}: {metric_value:.4f}")
+        
+        # Metriky pro kaskádový model
+        metrics = compute_all_metrics(final_pred, lab_np, include_surface_metrics=True)
+        print(f"\nKaskádový model (kombinovaný přístup):")
         for metric_name, metric_value in metrics.items():
-            print(f"{metric_name}: {metric_value:.4f}")
+            print(f"  {metric_name}: {metric_value:.4f}")
+        
+        # Srovnání hlavních metrik
+        dice_diff = metrics.get("dice", 0) - standalone_metrics.get("dice", 0)
+        print(f"\nRozdíl v DICE: {dice_diff:.4f} {'(zlepšení)' if dice_diff > 0 else '(zhoršení)' if dice_diff < 0 else '(beze změny)'}")
 
     # Vytvoření výsledného slovníku
     result = {
         "prediction": final_pred,
+        "standalone_prediction": standalone_pred,  # Přidána samostatná predikce hlavního modelu
         "metrics": metrics,
-        "small_lesion_metrics": {},  # TODO: Přidat metriky pro model malých lézí
+        "standalone_metrics": standalone_metrics,  # Přidány metriky samostatného modelu
+        "small_lesion_metrics": {},
         "timing": {
             "small_lesion_model": small_lesion_time,
             "main_model": main_model_time,
+            "standalone_inference": standalone_inference_time,
+            "combined_inference": combined_inference_time,
             "total": small_lesion_time + main_model_time
         }
     }
@@ -1116,11 +1170,12 @@ def infer_full_volume_cascaded(
     result["diagnostics"] = {
         "processed_shape": input_vol.shape,
         "foreground_voxels": np.sum(final_pred > 0),
+        "standalone_foreground_voxels": np.sum(standalone_pred > 0),
         "small_lesion_foreground_voxels": np.sum(small_lesion_binary > small_lesion_threshold),
         "cascaded_mode": cascaded_mode
     }
     
-    return result 
+    return result
 
 
 def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, device="cuda", 
