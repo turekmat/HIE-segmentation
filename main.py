@@ -652,6 +652,16 @@ def run_cross_validation(config):
                         # Vytvoření vstupního tensoru
                         input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
                         
+                        # Načtení ground truth dat, pokud existují
+                        lab_np = None
+                        if os.path.exists(label_path):
+                            try:
+                                lab_sitk = sitk.ReadImage(label_path)
+                                lab_np = sitk.GetArrayFromImage(lab_sitk).astype(np.uint8)
+                                print(f"    Ground truth data načtena: {label_path}")
+                            except Exception as e:
+                                print(f"    Varování: Nelze načíst ground truth soubor {label_path}: {e}")
+                        
                         # Získání transformací pro TTA, pokud je povoleno
                         tta_transforms = None
                         if config.get("use_tta", True):
@@ -682,7 +692,8 @@ def run_cross_validation(config):
                             # Přidáme cesty a label pro kompletní výsledky
                             lab_np=lab_np if 'lab_np' in locals() else None,
                             input_paths=input_paths,
-                            label_path=label_path
+                            label_path=label_path,
+                            verbose=False
                         )
                         
                         # Výpis metrik
@@ -1018,6 +1029,16 @@ def run_inference(config):
                     # Vytvoření vstupního tensoru
                     input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
                     
+                    # Načtení ground truth dat, pokud existují
+                    lab_np = None
+                    if label_path and os.path.exists(label_path):
+                        try:
+                            lab_sitk = sitk.ReadImage(label_path)
+                            lab_np = sitk.GetArrayFromImage(lab_sitk).astype(np.uint8)
+                            print(f"Ground truth data načtena: {label_path}")
+                        except Exception as e:
+                            print(f"Varování: Nelze načíst ground truth soubor {label_path}: {e}")
+                    
                     # Získání transformací pro TTA, pokud je povoleno
                     tta_transforms = None
                     if config.get("use_tta", True):
@@ -1044,7 +1065,8 @@ def run_inference(config):
                         # Přidáme cesty a label pro kompletní výsledky
                         lab_np=lab_np if 'lab_np' in locals() else None,
                         input_paths=input_paths,
-                        label_path=label_path
+                        label_path=label_path,
+                        verbose=False
                     )
                     predictions.append(result_item["prediction"])
                 
@@ -1086,6 +1108,16 @@ def run_inference(config):
                 # Vytvoření vstupního tensoru
                 input_vol = np.stack(volumes, axis=0)  # tvar: (C, D, H, W)
                 
+                # Načtení ground truth dat, pokud existují
+                lab_np = None
+                if label_path and os.path.exists(label_path):
+                    try:
+                        lab_sitk = sitk.ReadImage(label_path)
+                        lab_np = sitk.GetArrayFromImage(lab_sitk).astype(np.uint8)
+                        print(f"Ground truth data načtena: {label_path}")
+                    except Exception as e:
+                        print(f"Varování: Nelze načíst ground truth soubor {label_path}: {e}")
+                
                 # Získání transformací pro TTA, pokud je povoleno
                 tta_transforms = None
                 if config.get("use_tta", True):
@@ -1095,6 +1127,17 @@ def run_inference(config):
                 if config.get("use_enhanced_cascade", False):
                     # Vylepšená kaskádová inference s AttentionResUNet a feature fusion
                     print("Používám vylepšenou kaskádovou inferenci s AttentionResUNet...")
+                    
+                    # Načtení ground truth dat, pokud existují
+                    lab_np = None
+                    if label_path and os.path.exists(label_path):
+                        try:
+                            lab_sitk = sitk.ReadImage(label_path)
+                            lab_np = sitk.GetArrayFromImage(lab_sitk).astype(np.uint8)
+                            print(f"Ground truth data načtena: {label_path}")
+                        except Exception as e:
+                            print(f"Varování: Nelze načíst ground truth soubor {label_path}: {e}")
+                    
                     result = infer_full_volume_enhanced_cascade(
                         input_vol=input_vol,
                         main_model=main_model,
@@ -1117,7 +1160,8 @@ def run_inference(config):
                         use_feature_fusion=config.get("use_feature_fusion", True),
                         # Přidáme cesty k souborům
                         input_paths=input_paths,
-                        label_path=label_path
+                        label_path=label_path,
+                        verbose=False
                     )
                 else:
                     # Standardní kaskádová inference
@@ -1141,7 +1185,8 @@ def run_inference(config):
                         # Přidáme cesty a label pro kompletní výsledky
                         lab_np=lab_np if 'lab_np' in locals() else None,
                         input_paths=input_paths,
-                        label_path=label_path
+                        label_path=label_path,
+                        verbose=False
                     )
         
         elif config["inference_mode"] == "moe" and expert_model is not None:
