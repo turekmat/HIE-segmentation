@@ -85,6 +85,7 @@ def get_default_config() -> Dict[str, Any]:
         "small_lesion_foreground_ratio": 0.8,
         "small_lesion_large_lesion_sampling_ratio": 0.25,
         "retrain_small_lesion_model": False,
+        "preload_small_lesion_volumes": True,  # Zda předem načíst objemy do paměti pro trénink malého modelu
         
         # Parametry pro pokročilou kombinaci predikcí
         "advanced_combine": False,
@@ -125,6 +126,12 @@ def parse_args_to_config(args, config: Optional[Dict[str, Any]] = None) -> Dict[
     for key, value in vars(args).items():
         if value is not None:
             config[key] = value
+    
+    # Speciální zpracování pro vzájemně vylučující se argumenty
+    if hasattr(args, 'no_preload_small_lesion_volumes') and args.no_preload_small_lesion_volumes:
+        config["preload_small_lesion_volumes"] = False
+    elif hasattr(args, 'preload_small_lesion_volumes') and args.preload_small_lesion_volumes:
+        config["preload_small_lesion_volumes"] = True
     
     # Vytvoření výstupních adresářů
     if not os.path.exists(config["output_dir"]):

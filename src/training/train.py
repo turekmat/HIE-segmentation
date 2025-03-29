@@ -651,7 +651,8 @@ def train_small_lesion_model(config, device="cuda"):
         augment=config.get("use_augmentation", True),
         use_z_adc=config["in_channels"] > 1,
         seed=config["seed"],
-        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25),
+        preload_volumes=config.get("preload_small_lesion_volumes", True)
     )
     
     # PŘIDANÉ: Diagnostické statistiky o datasetu malých lézí
@@ -754,7 +755,8 @@ def train_small_lesion_model(config, device="cuda"):
             'z_files': val_z_files,
             'lab_files': val_label_files
         },
-        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25),
+        preload_volumes=config.get("preload_small_lesion_volumes", True)  # Nový parametr pro zrychlení
     )
     
     # Aktualizace trénovacího datasetu bez validačních vzorků
@@ -998,7 +1000,8 @@ def train_small_lesion_model_with_indices(config, train_indices, fold_idx=None, 
             'z_files': train_z_files,
             'lab_files': train_label_files
         },
-        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25),
+        preload_volumes=config.get("preload_small_lesion_volumes", True)  # Nový parametr pro zrychlení
     )
     
     # PŘIDANÉ: Diagnostické statistiky o datasetu malých lézí
@@ -1101,7 +1104,8 @@ def train_small_lesion_model_with_indices(config, train_indices, fold_idx=None, 
             'z_files': val_z_files,
             'lab_files': val_label_files
         },
-        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25),
+        preload_volumes=config.get("preload_small_lesion_volumes", True)  # Nový parametr pro zrychlení
     )
     
     # Aktualizace trénovacího datasetu bez validačních vzorků
@@ -1133,7 +1137,8 @@ def train_small_lesion_model_with_indices(config, train_indices, fold_idx=None, 
             'z_files': updated_train_z_files,
             'lab_files': updated_train_label_files
         },
-        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25)
+        large_lesion_sampling_ratio=config.get("small_lesion_large_lesion_sampling_ratio", 0.25),
+        preload_volumes=config.get("preload_small_lesion_volumes", True)  # Nový parametr pro zrychlení
     )
     
     print(f"Velikost validačního datasetu: {len(val_dataset)} vzorků")

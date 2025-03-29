@@ -12,6 +12,7 @@ import random
 import wandb
 from datetime import datetime
 from torch.utils.data import DataLoader, Subset
+from typing import Dict, Any, Optional
 
 # Automatické přihlášení k Weights & Biases pomocí Kaggle secrets (pokud běží v Kaggle)
 if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
@@ -1304,10 +1305,16 @@ def main():
     parser.add_argument("--small_lesion_large_lesion_sampling_ratio", type=float, default=0.25,
                         help="Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)")
     parser.add_argument("--small_lesion_loss_name", type=str, default="focal_ce_combo",
-                        help="Ztrátová funkce pro trénování modelu malých lézí")
-
+                        help="Název ztrátové funkce pro model malých lézí")
+    
+    # Optimalizační parametry pro malý model
+    parser.add_argument("--preload_small_lesion_volumes", action="store_true",
+                        help="Předem načíst objemy do paměti pro trénink malého modelu (zrychlí trénink)")
+    parser.add_argument("--no_preload_small_lesion_volumes", action="store_true",
+                        help="Vypnout předběžné načítání objemů (šetří paměť, ale zpomalí trénink)")
+    
     # Parametry pro pokročilou kombinaci predikcí
-    parser.add_argument("--advanced_combine", action="store_true", 
+    parser.add_argument("--advanced_combine", action="store_true",
                         help="Použít pokročilou kombinaci predikcí")
     parser.add_argument("--combine_alpha", type=float, default=0.6,
                         help="Základní váha hlavního modelu při kombinaci (0-1)")

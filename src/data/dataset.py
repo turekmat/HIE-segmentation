@@ -325,7 +325,8 @@ class SmallLesionPatchDataset(Dataset):
         use_z_adc=True,
         seed=42,
         specific_files=None,
-        large_lesion_sampling_ratio=0.25  # Nový parametr pro kontrolu vzorkování velkých lézí
+        large_lesion_sampling_ratio=0.25,  # Nový parametr pro kontrolu vzorkování velkých lézí
+        preload_volumes=True  # Nový parametr pro předběžné načtení objemů
     ):
         """
         Args:
@@ -342,6 +343,7 @@ class SmallLesionPatchDataset(Dataset):
             specific_files: Slovník obsahující seznamy konkrétních souborů, které mají být použity
                            {'adc_files': [...], 'z_files': [...], 'lab_files': [...]}
             large_lesion_sampling_ratio: Poměr redukce vzorků z velkých lézí (0-1, výchozí 0.25)
+            preload_volumes: Zda načíst objemy do paměti před začátkem tréninku
         """
         super().__init__()
         self.adc_folder = adc_folder
@@ -355,6 +357,7 @@ class SmallLesionPatchDataset(Dataset):
         self.use_z_adc = use_z_adc
         self.seed = seed
         self.large_lesion_sampling_ratio = large_lesion_sampling_ratio
+        self.preload_volumes = preload_volumes
         
         # Nastavení seedu pro reprodukovatelnost
         np.random.seed(seed)
@@ -378,11 +381,39 @@ class SmallLesionPatchDataset(Dataset):
         if use_z_adc:
             assert len(self.adc_files) == len(self.z_files), "Počet ADC a Z-ADC souborů nesouhlasí"
         
+        # Cache pro uložení načtených objemů
+        self.volume_cache = {}
+        
         # Analýza všech objemů pro identifikaci malých lézí
         self.volume_info = self._analyze_volumes()
         
         # Vytvoření seznamu všech dostupných patchů
         self.all_patches = self._create_patch_list()
+        
+        # Předběžné načtení objemů do cache pro zrychlení
+        if self.preload_volumes:
+            print("\nPředběžné načítání objemů do paměti...")
+            # Zjistíme, které objemy jsou třeba, abychom nenačítali nepotřebné objemy
+            unique_volumes = set([patch[0] for patch in self.all_patches])
+            total_volumes = len(unique_volumes)
+            
+            print(f"Bude načteno {total_volumes} objemů do paměti.")
+            
+            if total_volumes > 50:
+                print("VAROVÁNÍ: Načítá se velký počet objemů. Pokud dojde k problémům s pamětí, zkuste:")
+                print("1. Snížit počet objemů výběrem menší podmnožiny dat")
+                print("2. Znovu spustit s preload_volumes=False")
+            
+            # Načítání objemů po skupinách pro lepší monitoring postupu
+            batch_size = 5
+            for i in range(0, total_volumes, batch_size):
+                batch_indices = list(unique_volumes)[i:i+batch_size]
+                print(f"Načítání objemů {i+1}-{min(i+batch_size, total_volumes)} z {total_volumes}...")
+                
+                for vol_idx in batch_indices:
+                    self._load_volume_to_cache(vol_idx)
+            
+            print(f"Načteno {len(self.volume_cache)} objemů do paměti.")
         
         # Výpis statistik o počtu patchů
         small_lesion_volumes_count = len([info for info in self.volume_info if info['is_small_lesion'] and info['has_lesions']])
@@ -397,7 +428,38 @@ class SmallLesionPatchDataset(Dataset):
         print(f"  Vzorky z volimů s malými lézemi: ~{small_lesion_volumes_count * self.patches_per_volume} (zachováno 100%)")
         print(f"  Vzorky z volimů s velkými lézemi: ~{int(large_lesion_volumes_count * self.patches_per_volume * self.large_lesion_sampling_ratio)} (redukováno na {self.large_lesion_sampling_ratio*100:.0f}%)")
         print(f"  Vzorky z objemů bez lézí: ~{min(no_lesion_volumes_count * 50, len(self.all_patches) - small_lesion_volumes_count * self.patches_per_volume - int(large_lesion_volumes_count * self.patches_per_volume * self.large_lesion_sampling_ratio))}")
+    
+    def _load_volume_to_cache(self, vol_idx):
+        """
+        Načte objem do cache pro rychlejší přístup.
         
+        Args:
+            vol_idx: Index objemu
+        """
+        if vol_idx in self.volume_cache:
+            return  # Objem již je v cache
+        
+        volume_data = {}
+        
+        # Načtení ADC dat
+        adc_path = os.path.join(self.adc_folder, self.adc_files[vol_idx])
+        adc_sitk = sitk.ReadImage(adc_path)
+        volume_data['adc'] = sitk.GetArrayFromImage(adc_sitk).astype(np.float32)
+        
+        # Načtení Z-ADC dat, pokud se používají
+        if self.use_z_adc:
+            z_path = os.path.join(self.z_folder, self.z_files[vol_idx])
+            z_sitk = sitk.ReadImage(z_path)
+            volume_data['z'] = sitk.GetArrayFromImage(z_sitk).astype(np.float32)
+        
+        # Načtení label dat
+        lab_path = os.path.join(self.label_folder, self.lab_files[vol_idx])
+        lab_sitk = sitk.ReadImage(lab_path)
+        volume_data['lab'] = sitk.GetArrayFromImage(lab_sitk)
+        
+        # Uložení dat do cache
+        self.volume_cache[vol_idx] = volume_data
+
     def _analyze_volumes(self):
         """
         Analyzuje všechny objemy a klasifikuje léze podle velikosti.
@@ -406,49 +468,65 @@ class SmallLesionPatchDataset(Dataset):
             list: Seznam informací o objemech a klasifikace lézí
         """
         volume_info = []
+        total_volumes = len(self.adc_files)
         
-        for i, (adc_file, lab_file) in enumerate(zip(self.adc_files, self.lab_files)):
-            lab_path = os.path.join(self.label_folder, lab_file)
-            lab_sitk = sitk.ReadImage(lab_path)
-            lab_np = sitk.GetArrayFromImage(lab_sitk)
+        print(f"Analyzuji {total_volumes} objemů...")
+        
+        # Zpracování po dávkách pro lepší monitoring
+        batch_size = 10
+        for batch_start in range(0, total_volumes, batch_size):
+            batch_end = min(batch_start + batch_size, total_volumes)
+            print(f"Analýza objemů {batch_start+1}-{batch_end} z {total_volumes}...")
             
-            # Zjištění, zda objem obsahuje léze
-            has_lesions = np.max(lab_np) > 0
-            
-            if has_lesions:
-                # Počet foreground voxelů
-                lesion_voxels = np.sum(lab_np > 0)
+            for i in range(batch_start, batch_end):
+                adc_file = self.adc_files[i]
+                lab_file = self.lab_files[i]
                 
-                # Klasifikace léze jako malé nebo velké
-                is_small_lesion = lesion_voxels <= self.small_lesion_max_voxels
+                # Načtení label dat - buď z cache nebo z disku
+                if i in self.volume_cache:
+                    lab_np = self.volume_cache[i]['lab']
+                else:
+                    lab_path = os.path.join(self.label_folder, lab_file)
+                    lab_sitk = sitk.ReadImage(lab_path)
+                    lab_np = sitk.GetArrayFromImage(lab_sitk)
                 
-                # Připravíme masky pro možné hledání patchů
-                props = regionprops(lab_np.astype(np.int32))
+                # Zjištění, zda objem obsahuje léze
+                has_lesions = np.max(lab_np) > 0
                 
-                # Sbíráme souřadnice středů lézí pro inteligentní vzorkování
-                centers = []
-                for prop in props:
-                    centers.append(prop.centroid)
-                
-                volume_info.append({
-                    'index': i,
-                    'adc_file': adc_file,
-                    'lab_file': lab_file,
-                    'has_lesions': has_lesions,
-                    'lesion_voxels': lesion_voxels,
-                    'is_small_lesion': is_small_lesion,
-                    'lesion_centers': centers
-                })
-            else:
-                volume_info.append({
-                    'index': i,
-                    'adc_file': adc_file,
-                    'lab_file': lab_file,
-                    'has_lesions': has_lesions,
-                    'lesion_voxels': 0,
-                    'is_small_lesion': False,
-                    'lesion_centers': []
-                })
+                if has_lesions:
+                    # Počet foreground voxelů
+                    lesion_voxels = np.sum(lab_np > 0)
+                    
+                    # Klasifikace léze jako malé nebo velké
+                    is_small_lesion = lesion_voxels <= self.small_lesion_max_voxels
+                    
+                    # Připravíme masky pro možné hledání patchů
+                    props = regionprops(lab_np.astype(np.int32))
+                    
+                    # Sbíráme souřadnice středů lézí pro inteligentní vzorkování
+                    centers = []
+                    for prop in props:
+                        centers.append(prop.centroid)
+                    
+                    volume_info.append({
+                        'index': i,
+                        'adc_file': adc_file,
+                        'lab_file': lab_file,
+                        'has_lesions': has_lesions,
+                        'lesion_voxels': lesion_voxels,
+                        'is_small_lesion': is_small_lesion,
+                        'lesion_centers': centers
+                    })
+                else:
+                    volume_info.append({
+                        'index': i,
+                        'adc_file': adc_file,
+                        'lab_file': lab_file,
+                        'has_lesions': has_lesions,
+                        'lesion_voxels': 0,
+                        'is_small_lesion': False,
+                        'lesion_centers': []
+                    })
         
         return volume_info
     
@@ -473,10 +551,13 @@ class SmallLesionPatchDataset(Dataset):
         for vol_info in small_lesion_volumes:
             vol_idx = vol_info['index']
             
-            # Načtení label dat
-            lab_path = os.path.join(self.label_folder, vol_info['lab_file'])
-            lab_sitk = sitk.ReadImage(lab_path)
-            lab_np = sitk.GetArrayFromImage(lab_sitk)
+            # Načtení label dat - buď z cache nebo z disku
+            if vol_idx in self.volume_cache:
+                lab_np = self.volume_cache[vol_idx]['lab']
+            else:
+                lab_path = os.path.join(self.label_folder, vol_info['lab_file'])
+                lab_sitk = sitk.ReadImage(lab_path)
+                lab_np = sitk.GetArrayFromImage(lab_sitk)
             
             # Načtení předpočítaných středů lézí
             centers = vol_info['lesion_centers']
@@ -497,10 +578,13 @@ class SmallLesionPatchDataset(Dataset):
             for vol_info in large_lesion_volumes:
                 vol_idx = vol_info['index']
                 
-                # Načtení label dat
-                lab_path = os.path.join(self.label_folder, vol_info['lab_file'])
-                lab_sitk = sitk.ReadImage(lab_path)
-                lab_np = sitk.GetArrayFromImage(lab_sitk)
+                # Načtení label dat - buď z cache nebo z disku
+                if vol_idx in self.volume_cache:
+                    lab_np = self.volume_cache[vol_idx]['lab']
+                else:
+                    lab_path = os.path.join(self.label_folder, vol_info['lab_file'])
+                    lab_sitk = sitk.ReadImage(lab_path)
+                    lab_np = sitk.GetArrayFromImage(lab_sitk)
                 
                 # Načtení předpočítaných středů lézí
                 centers = vol_info['lesion_centers']
@@ -521,10 +605,13 @@ class SmallLesionPatchDataset(Dataset):
             for vol_info in no_lesion_volumes:
                 vol_idx = vol_info['index']
                 
-                # Načtení label dat
-                lab_path = os.path.join(self.label_folder, vol_info['lab_file'])
-                lab_sitk = sitk.ReadImage(lab_path)
-                lab_np = sitk.GetArrayFromImage(lab_sitk)
+                # Načtení label dat - buď z cache nebo z disku
+                if vol_idx in self.volume_cache:
+                    lab_np = self.volume_cache[vol_idx]['lab']
+                else:
+                    lab_path = os.path.join(self.label_folder, vol_info['lab_file'])
+                    lab_sitk = sitk.ReadImage(lab_path)
+                    lab_np = sitk.GetArrayFromImage(lab_sitk)
                 
                 # Výběr omezeného počtu náhodných patchů
                 vol_patches = self._sample_patches_from_volume(
@@ -632,36 +719,78 @@ class SmallLesionPatchDataset(Dataset):
         vol_idx, z_start, y_start, x_start = self.all_patches[idx]
         pz, py, px = self.patch_size
         
-        # Načtení ADC dat
-        adc_path = os.path.join(self.adc_folder, self.adc_files[vol_idx])
-        adc_sitk = sitk.ReadImage(adc_path)
-        adc_np = sitk.GetArrayFromImage(adc_sitk).astype(np.float32)
+        # Zajištění, že objem je v cache
+        if vol_idx not in self.volume_cache and self.preload_volumes:
+            self._load_volume_to_cache(vol_idx)
         
-        # Extrakce ADC patche
-        adc_patch = adc_np[z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
+        # Načtení dat z cache, pokud jsou k dispozici
+        if vol_idx in self.volume_cache:
+            # Použití dat z cache
+            volume_data = self.volume_cache[vol_idx]
+            
+            # Extrakce ADC patche
+            adc_patch = volume_data['adc'][z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
+            
+            # Extrakce Z-ADC patche, pokud je požadován
+            if self.use_z_adc:
+                z_patch = volume_data['z'][z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
+                # Sloučení kanálů
+                input_data = np.stack([adc_patch, z_patch], axis=0)
+            else:
+                # Pouze ADC
+                input_data = np.expand_dims(adc_patch, axis=0)
+            
+            # Extrakce label patche
+            lab_patch = volume_data['lab'][z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
         
-        # Načtení a extrakce Z-ADC patche, pokud je požadován
-        if self.use_z_adc:
-            z_path = os.path.join(self.z_folder, self.z_files[vol_idx])
-            z_sitk = sitk.ReadImage(z_path)
-            z_np = sitk.GetArrayFromImage(z_sitk).astype(np.float32)
-            
-            # Extrakce Z-ADC patche
-            z_patch = z_np[z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
-            
-            # Sloučení kanálů
-            input_data = np.stack([adc_patch, z_patch], axis=0)
         else:
-            # Pouze ADC
-            input_data = np.expand_dims(adc_patch, axis=0)
+            # Standardní načtení z disku
+            # Načtení ADC dat
+            adc_path = os.path.join(self.adc_folder, self.adc_files[vol_idx])
+            adc_sitk = sitk.ReadImage(adc_path)
+            adc_np = sitk.GetArrayFromImage(adc_sitk).astype(np.float32)
+            
+            # Extrakce ADC patche
+            adc_patch = adc_np[z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
+            
+            # Načtení a extrakce Z-ADC patche, pokud je požadován
+            if self.use_z_adc:
+                z_path = os.path.join(self.z_folder, self.z_files[vol_idx])
+                z_sitk = sitk.ReadImage(z_path)
+                z_np = sitk.GetArrayFromImage(z_sitk).astype(np.float32)
+                
+                # Extrakce Z-ADC patche
+                z_patch = z_np[z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
+                
+                # Sloučení kanálů
+                input_data = np.stack([adc_patch, z_patch], axis=0)
+            else:
+                # Pouze ADC
+                input_data = np.expand_dims(adc_patch, axis=0)
+            
+            # Načtení a extrakce label patche
+            lab_path = os.path.join(self.label_folder, self.lab_files[vol_idx])
+            lab_sitk = sitk.ReadImage(lab_path)
+            lab_np = sitk.GetArrayFromImage(lab_sitk)
+            
+            # Extrakce label patche
+            lab_patch = lab_np[z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
         
-        # Načtení a extrakce label patche
-        lab_path = os.path.join(self.label_folder, self.lab_files[vol_idx])
-        lab_sitk = sitk.ReadImage(lab_path)
-        lab_np = sitk.GetArrayFromImage(lab_sitk)
-        
-        # Extrakce label patche
-        lab_patch = lab_np[z_start:z_start+pz, y_start:y_start+py, x_start:x_start+px].copy()
+        # Aplikace augmentace, pokud je povolena
+        if self.augment:
+            # Implementace základních 3D augmentací
+            # Náhodné převrácení
+            if np.random.random() > 0.5:
+                input_data = input_data[:, :, :, ::-1]  # Převrácení podél x osy
+                lab_patch = lab_patch[:, :, ::-1]
+            
+            if np.random.random() > 0.5:
+                input_data = input_data[:, :, ::-1, :]  # Převrácení podél y osy
+                lab_patch = lab_patch[:, ::-1, :]
+            
+            if np.random.random() > 0.5:
+                input_data = input_data[:, ::-1, :, :]  # Převrácení podél z osy
+                lab_patch = lab_patch[::-1, :, :]
         
         # Převod na tensor
         input_tensor = torch.from_numpy(input_data)
