@@ -761,7 +761,9 @@ def infer_full_volume_cascaded(
     high_conf_threshold=0.8,
     adaptive_weight=True,
     size_based_weight=True,
-    lab_np=None  # Added lab_np parameter with default value of None
+    lab_np=None,  # Added lab_np parameter with default value of None
+    input_paths=None,  # Přidáme cesty ke vstupním souborům
+    label_path=None    # Přidáme cestu k ground truth souboru
 ):
     """
     Provádí kaskádovanou inferenci na celém objemu s využitím hlavního modelu a modelu pro malé léze.
@@ -785,10 +787,11 @@ def infer_full_volume_cascaded(
         adaptive_weight (bool): Zda použít adaptivní váhování podle velikosti a jistoty detekce
         size_based_weight (bool): Zda použít váhování podle velikosti léze
         lab_np (numpy.ndarray, optional): Ground truth maska, pokud je k dispozici
+        input_paths (list, optional): Seznam cest ke vstupním souborům (např. [adc_path, zadc_path])
+        label_path (str, optional): Cesta k ground truth souboru
         
     Returns:
-        numpy.ndarray: Finální predikce jako binární maska
-        dict: Metriky a časy inferenčního procesu
+        dict: Výsledky inference, včetně predikce a metrik
     """
     # Začátek diagnostiky
     inference_start = time.time()
@@ -1150,10 +1153,18 @@ def infer_full_volume_cascaded(
         dice_diff = metrics.get("dice", 0) - standalone_metrics.get("dice", 0)
         print(f"\nRozdíl v DICE: {dice_diff:.4f} {'(zlepšení)' if dice_diff > 0 else '(zhoršení)' if dice_diff < 0 else '(beze změny)'}")
 
+    # Získání ID pacienta, pokud je k dispozici label_path
+    patient_id = None
+    if label_path:
+        patient_id = extract_patient_id(label_path)
+
     # Vytvoření výsledného slovníku
     result = {
         "prediction": final_pred,
         "standalone_prediction": standalone_pred,  # Přidána samostatná predikce hlavního modelu
+        "reference": lab_np,  # Přidání reference
+        "input_paths": input_paths if input_paths else [],  # Přidání cest ke vstupním souborům
+        "label_path": label_path,  # Přidání cesty k ground truth souboru
         "metrics": metrics,
         "standalone_metrics": standalone_metrics,  # Přidány metriky samostatného modelu
         "small_lesion_metrics": {},
@@ -1165,6 +1176,10 @@ def infer_full_volume_cascaded(
             "total": small_lesion_time + main_model_time
         }
     }
+    
+    # Přidání patient_id, pokud bylo získáno
+    if patient_id:
+        result['patient_id'] = patient_id
     
     # Přidání diagnositických informací
     result["diagnostics"] = {
@@ -1184,7 +1199,7 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
                               patch_size=(16, 16, 16), small_lesion_max_voxels=50,
                               alpha=0.6, confidence_boost_factor=1.5, high_conf_threshold=0.8,
                               adaptive_weight=True, size_based_weight=True,
-                              use_feature_fusion=True):
+                              use_feature_fusion=True, input_paths=None, label_path=None):
     """
     Vylepšená kaskádová inference s využitím CBAM a feature fusion.
     
@@ -1206,6 +1221,8 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
         adaptive_weight: Zda použít adaptivní vážení
         size_based_weight: Zda použít vážení podle velikosti léze
         use_feature_fusion: Zda použít feature fusion z hlavního modelu
+        input_paths: Seznam cest ke vstupním souborům (např. [adc_path, zadc_path])
+        label_path: Cesta k ground truth souboru
         
     Returns:
         dict: Slovník s výsledky inference
@@ -1443,24 +1460,54 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
     
     # Výpočet metrik, pokud je k dispozici ground truth
     metrics = {}
+    standalone_metrics = {}
+    
     if lab_np is not None:
         from src.utils.metrics import compute_all_metrics
-        metrics = compute_all_metrics(final_pred, lab_np, include_surface_metrics=True)
+        
         print(f"\n===== METRIKY =====")
+        
+        # Metriky pro standardní model
+        standalone_metrics = compute_all_metrics(standard_pred_binary, lab_np, include_surface_metrics=True)
+        print(f"Standardní model (pouze SwinUNETR):")
+        for metric_name, metric_value in standalone_metrics.items():
+            print(f"  {metric_name}: {metric_value:.4f}")
+        
+        # Metriky pro kaskádový model
+        metrics = compute_all_metrics(final_pred, lab_np, include_surface_metrics=True)
+        print(f"\nKaskádový model (kombinovaný přístup):")
         for metric_name, metric_value in metrics.items():
-            print(f"{metric_name}: {metric_value:.4f}")
+            print(f"  {metric_name}: {metric_value:.4f}")
+        
+        # Srovnání hlavních metrik
+        dice_diff = metrics.get("dice", 0) - standalone_metrics.get("dice", 0)
+        print(f"\nRozdíl v DICE: {dice_diff:.4f} {'(zlepšení)' if dice_diff > 0 else '(zhoršení)' if dice_diff < 0 else '(beze změny)'}")
+
+    # Získání ID pacienta, pokud je k dispozici label_path
+    patient_id = None
+    if label_path:
+        patient_id = extract_patient_id(label_path)
 
     # Vytvoření výsledného slovníku
     result = {
         "prediction": final_pred,
+        "standalone_prediction": standard_pred_binary,  # Přidána samostatná predikce hlavního modelu
+        "reference": lab_np,  # Přidání reference
+        "input_paths": input_paths if input_paths else [],  # Přidání cest ke vstupním souborům
+        "label_path": label_path,  # Přidání cesty k ground truth souboru
         "metrics": metrics,
-        "small_lesion_metrics": {},  # TODO: Přidat metriky pro model malých lézí
+        "standalone_metrics": standalone_metrics,  # Přidány metriky samostatného modelu
+        "small_lesion_metrics": {},
         "timing": {
             "small_lesion_model": small_lesion_time,
             "main_model": main_model_time,
             "total": small_lesion_time + main_model_time
         }
     }
+    
+    # Přidání patient_id, pokud bylo získáno
+    if patient_id:
+        result['patient_id'] = patient_id
     
     # Přidání diagnositických informací
     result["diagnostics"] = {
@@ -1472,4 +1519,4 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
         "use_feature_fusion": use_feature_fusion
     }
     
-    return result 
+    return result

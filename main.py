@@ -678,7 +678,11 @@ def run_cross_validation(config):
                             confidence_boost_factor=config.get("combine_boost_factor", 1.5),
                             high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
                             adaptive_weight=config.get("combine_adaptive", True),
-                            size_based_weight=config.get("combine_size_based", True)
+                            size_based_weight=config.get("combine_size_based", True),
+                            # Přidáme cesty a label pro kompletní výsledky
+                            lab_np=lab_np if 'lab_np' in locals() else None,
+                            input_paths=input_paths,
+                            label_path=label_path
                         )
                         
                         # Výpis metrik
@@ -1036,7 +1040,11 @@ def run_inference(config):
                         confidence_boost_factor=config.get("combine_boost_factor", 1.5),
                         high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
                         adaptive_weight=config.get("combine_adaptive", True),
-                        size_based_weight=config.get("combine_size_based", True)
+                        size_based_weight=config.get("combine_size_based", True),
+                        # Přidáme cesty a label pro kompletní výsledky
+                        lab_np=lab_np if 'lab_np' in locals() else None,
+                        input_paths=input_paths,
+                        label_path=label_path
                     )
                     predictions.append(result_item["prediction"])
                 
@@ -1094,7 +1102,7 @@ def run_inference(config):
                         device=device,
                         use_tta=config.get("use_tta", True),
                         tta_transforms=tta_transforms,
-                        lab_vol=label_path if label_path else None,
+                        lab_vol=lab_np if 'lab_np' in locals() else None,
                         cascaded_mode=config.get("cascaded_mode", "combined"),
                         small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
                         patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
@@ -1106,7 +1114,10 @@ def run_inference(config):
                         adaptive_weight=config.get("combine_adaptive", True),
                         size_based_weight=config.get("combine_size_based", True),
                         # Parametry pro feature fusion
-                        use_feature_fusion=config.get("use_feature_fusion", True)
+                        use_feature_fusion=config.get("use_feature_fusion", True),
+                        # Přidáme cesty k souborům
+                        input_paths=input_paths,
+                        label_path=label_path
                     )
                 else:
                     # Standardní kaskádová inference
@@ -1126,7 +1137,11 @@ def run_inference(config):
                         confidence_boost_factor=config.get("combine_boost_factor", 1.5),
                         high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
                         adaptive_weight=config.get("combine_adaptive", True),
-                        size_based_weight=config.get("combine_size_based", True)
+                        size_based_weight=config.get("combine_size_based", True),
+                        # Přidáme cesty a label pro kompletní výsledky
+                        lab_np=lab_np if 'lab_np' in locals() else None,
+                        input_paths=input_paths,
+                        label_path=label_path
                     )
         
         elif config["inference_mode"] == "moe" and expert_model is not None:
