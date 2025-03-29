@@ -693,7 +693,10 @@ def run_cross_validation(config):
                             lab_np=lab_np if 'lab_np' in locals() else None,
                             input_paths=input_paths,
                             label_path=label_path,
-                            verbose=False
+                            verbose=False,
+                            # Přidané parametry pro kompatibilitu s validací během tréninku
+                            training_mode=config["training_mode"],
+                            sw_overlap=config.get("sw_overlap", 0.5)
                         )
                         
                         # Výpis metrik
@@ -1066,7 +1069,10 @@ def run_inference(config):
                         lab_np=lab_np if 'lab_np' in locals() else None,
                         input_paths=input_paths,
                         label_path=label_path,
-                        verbose=False
+                        verbose=False,
+                        # Přidané parametry pro kompatibilitu s validací během tréninku
+                        training_mode=config["training_mode"],
+                        sw_overlap=config.get("sw_overlap", 0.5)
                     )
                     predictions.append(result_item["prediction"])
                 
@@ -1186,7 +1192,10 @@ def run_inference(config):
                         lab_np=lab_np if 'lab_np' in locals() else None,
                         input_paths=input_paths,
                         label_path=label_path,
-                        verbose=False
+                        verbose=False,
+                        # Přidané parametry pro kompatibilitu s validací během tréninku
+                        training_mode=config["training_mode"],
+                        sw_overlap=config.get("sw_overlap", 0.5)
                     )
         
         elif config["inference_mode"] == "moe" and expert_model is not None:
