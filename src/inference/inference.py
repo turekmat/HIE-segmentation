@@ -655,10 +655,25 @@ def advanced_combine_predictions(main_pred_probs, small_lesion_probs,
     """
     import scipy.ndimage as ndimage
     from skimage.measure import label, regionprops
+    import torch
+    
+    # Convert PyTorch tensors to NumPy arrays if needed
+    if isinstance(main_pred_probs, torch.Tensor):
+        main_pred_probs = main_pred_probs.detach().cpu().numpy()
+    
+    if isinstance(small_lesion_probs, torch.Tensor):
+        small_lesion_probs = small_lesion_probs.detach().cpu().numpy()
     
     # Extrakt relevantních kanálů (pravděpodobnosti léze)
     main_prob = main_pred_probs[1]  # Kanál 1 = léze
     small_prob = small_lesion_probs[1]  # Kanál 1 = léze
+    
+    # Convert tensor to numpy if needed
+    if isinstance(main_prob, torch.Tensor):
+        main_prob = main_prob.detach().cpu().numpy()
+    
+    if isinstance(small_prob, torch.Tensor):
+        small_prob = small_prob.detach().cpu().numpy()
     
     # 1. Vytvoření binárních masek pro analýzu komponent
     main_binary = (main_prob > 0.5).astype(np.int32)
@@ -853,7 +868,10 @@ def infer_full_volume_cascaded(
     small_lesion_prob_map = reconstruct_from_patches(patches_with_preds, input_vol.shape, out_channels=2)
     
     # Vytvoření binární masky pro malé léze
-    small_lesion_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.uint8)
+    if isinstance(small_lesion_prob_map[1], torch.Tensor):
+        small_lesion_binary = (small_lesion_prob_map[1].detach().cpu().numpy() > small_lesion_threshold).astype(np.uint8)
+    else:
+        small_lesion_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.uint8)
     
     # Časová statistika pro detekci malých lézí
     small_lesion_time = time.time() - small_lesion_time_start
@@ -1056,7 +1074,12 @@ def infer_full_volume_cascaded(
             # Spočítáme kolik voxelů přispívá každý model
             total_voxels = np.sum(final_pred > 0)
             standard_pred_binary = (standalone_probs[1] > 0.5).astype(np.uint8)
-            small_pred_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.uint8)
+            
+            # Add tensor check for small_lesion_prob_map
+            if isinstance(small_lesion_prob_map[1], torch.Tensor):
+                small_pred_binary = (small_lesion_prob_map[1].detach().cpu().numpy() > small_lesion_threshold).astype(np.uint8)
+            else:
+                small_pred_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.uint8)
             
             unique_main = np.sum((standard_pred_binary > 0) & (final_pred > 0))
             unique_small = np.sum((small_pred_binary > 0) & (final_pred > 0))
@@ -1350,10 +1373,13 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
     small_lesion_prob_map = reconstruct_from_patches(patches_with_preds, input_vol.shape, out_channels=2)
     
     # Vytvoření binární masky pro malé léze
-    small_pred_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.uint8)
+    if isinstance(small_lesion_prob_map[1], torch.Tensor):
+        small_lesion_binary = (small_lesion_prob_map[1].detach().cpu().numpy() > small_lesion_threshold).astype(np.uint8)
+    else:
+        small_lesion_binary = (small_lesion_prob_map[1] > small_lesion_threshold).astype(np.uint8)
     
     small_model_time = time.time() - small_model_start
-    small_voxels = np.sum(small_pred_binary > 0)
+    small_voxels = np.sum(small_lesion_binary > 0)
     
     if verbose:
         print(f"Detekce malých lézí dokončena za {small_model_time:.2f}s")
@@ -1376,9 +1402,9 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
         if small_voxels > 0:
             from scipy import ndimage
             # Získání ROI dilatací masky malých lézí
-            roi_mask = ndimage.binary_dilation(small_pred_binary, iterations=5).astype(np.uint8)
+            roi_mask = ndimage.binary_dilation(small_lesion_binary, iterations=5).astype(np.uint8)
             # Nahrazení ROI oblasti predikcí z modelu malých lézí
-            final_pred[roi_mask > 0] = small_pred_binary[roi_mask > 0]
+            final_pred[roi_mask > 0] = small_lesion_binary[roi_mask > 0]
             
             if verbose:
                 print(f"ROI režim: Nahrazeno {np.sum(roi_mask)} voxelů v ROI predikcí z modelu pro malé léze")
@@ -1477,7 +1503,7 @@ def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, devic
         "processed_shape": input_vol.shape,
         "foreground_voxels": np.sum(final_pred > 0),
         "standalone_foreground_voxels": np.sum(standard_pred_binary > 0),
-        "small_lesion_foreground_voxels": np.sum(small_pred_binary > 0),
+        "small_lesion_foreground_voxels": np.sum(small_lesion_binary > 0),
         "cascaded_mode": cascaded_mode,
         "use_feature_fusion": use_feature_fusion
     }
