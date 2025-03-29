@@ -69,6 +69,36 @@ def get_default_config() -> Dict[str, Any]:
         "use_wandb": False,                 # Zda používat Weights & Biases
         "wandb_project": "hie-segmentation", # Jméno projektu ve wandb
         "wandb_run_name": None,             # Jméno běhu ve wandb
+        
+        # Parametry kaskádového přístupu
+        "use_cascaded_approach": False,
+        "cascaded_mode": "combined",  # "roi_only" nebo "combined"
+        "small_lesion_model": "small_unet",
+        "small_lesion_patch_size": [16, 16, 16],
+        "small_lesion_threshold": 0.5,
+        "small_lesion_max_voxels": 50,
+        "small_lesion_model_path": None,
+        "small_lesion_epochs": 50,
+        "small_lesion_batch_size": 16,
+        "small_lesion_lr": 0.001,
+        "small_lesion_patches_per_volume": 200,
+        "small_lesion_foreground_ratio": 0.8,
+        "small_lesion_large_lesion_sampling_ratio": 0.25,
+        "retrain_small_lesion_model": False,
+        
+        # Parametry pro pokročilou kombinaci predikcí
+        "advanced_combine": False,
+        "combine_alpha": 0.6,
+        "combine_boost_factor": 1.5,
+        "combine_high_conf_threshold": 0.8,
+        "combine_adaptive": True,
+        "combine_size_based": True,
+        
+        # Parametry pro vylepšený kaskádový přístup s AttentionResUNet
+        "use_enhanced_cascade": False,
+        "use_cbam": True,
+        "use_feature_fusion": True,
+        "enhanced_model_features": [32, 64, 128, 256],
     }
     
     # Automatické vytvoření jména běhu, pokud není uvedeno

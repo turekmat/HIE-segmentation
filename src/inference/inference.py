@@ -7,10 +7,12 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 import math
 import time
+import torch.nn.functional as F
 
 from ..utils.metrics import dice_coefficient, compute_masd, compute_nsd
 from ..data.preprocessing import get_tta_transforms, apply_tta_transform, invert_tta_transform
 from ..data.dataset import extract_patient_id
+from .feature_extraction import extract_swinunetr_features
 
 def tta_forward(model, input_tensor, device, tta_transforms):
     """
@@ -1116,6 +1118,303 @@ def infer_full_volume_cascaded(
         "foreground_voxels": np.sum(final_pred > 0),
         "small_lesion_foreground_voxels": np.sum(small_lesion_binary > small_lesion_threshold),
         "cascaded_mode": cascaded_mode
+    }
+    
+    return result 
+
+
+def infer_full_volume_enhanced_cascade(input_vol, main_model, small_model, device="cuda", 
+                              use_tta=True, tta_transforms=None, lab_vol=None,
+                              cascaded_mode="combined", small_lesion_threshold=0.5,
+                              patch_size=(16, 16, 16), small_lesion_max_voxels=50,
+                              alpha=0.6, confidence_boost_factor=1.5, high_conf_threshold=0.8,
+                              adaptive_weight=True, size_based_weight=True,
+                              use_feature_fusion=True):
+    """
+    Vylepšená kaskádová inference s využitím CBAM a feature fusion.
+    
+    Args:
+        input_vol: Vstupní obraz (C, D, H, W) nebo tensor
+        main_model: Hlavní model (SwinUNETR)
+        small_model: Vylepšený model pro malé léze (AttentionResUNet)
+        device: Zařízení pro výpočet
+        use_tta: Zda použít Test-Time Augmentation
+        tta_transforms: Seznam transformací pro TTA
+        lab_vol: Ground truth maska, pokud je k dispozici
+        cascaded_mode: Režim kaskády, "combined" nebo "roi_only"
+        small_lesion_threshold: Práh pro detekci malých lézí
+        patch_size: Velikost patche pro model malých lézí
+        small_lesion_max_voxels: Maximální velikost léze považované za 'malou'
+        alpha: Váha pro kombinování výsledků modelů
+        confidence_boost_factor: Faktor zvýšení váhy pro vysoké confidence
+        high_conf_threshold: Práh pro klasifikaci vysoké confidence
+        adaptive_weight: Zda použít adaptivní vážení
+        size_based_weight: Zda použít vážení podle velikosti léze
+        use_feature_fusion: Zda použít feature fusion z hlavního modelu
+        
+    Returns:
+        dict: Slovník s výsledky inference
+    """
+    # Převod na numpy pro jistotu
+    if isinstance(input_vol, torch.Tensor):
+        input_vol = input_vol.cpu().numpy()
+    
+    # Převod na šedotón, pokud je potřeba
+    if input_vol.ndim == 3:
+        input_vol = np.expand_dims(input_vol, axis=0)
+    
+    # Převod ground truth na numpy, pokud je k dispozici
+    lab_np = None
+    if lab_vol is not None:
+        if isinstance(lab_vol, torch.Tensor):
+            lab_np = lab_vol.cpu().numpy()
+        else:
+            lab_np = lab_vol
+    
+    # Provedeme inferenci nejprve s hlavním modelem (SwinUNETR)
+    print(f"Provádím inferenci s hlavním modelem (SwinUNETR)...")
+    start_time_main = time.time()
+    
+    # Převod vstupu na tensor
+    input_tensor = torch.tensor(input_vol, dtype=torch.float32).unsqueeze(0).to(device)
+    
+    # Inferece s feature extrakcí
+    from .feature_extraction import extract_swinunetr_features
+    
+    # Nastavíme model do eval módu
+    main_model.eval()
+    small_model.eval()
+    
+    # Provedeme inferenci s hlavním modelem a extrahujeme příznaky
+    with torch.no_grad():
+        if use_tta:
+            # Test-Time Augmentation
+            tta_outputs = []
+            tta_features_list = []
+            
+            if tta_transforms is None:
+                tta_transforms = get_tta_transforms()
+                
+            for transform in tta_transforms:
+                # Aplikace transformace
+                transformed = transform(input_tensor).to(device)
+                
+                # Inferece s transformovaným vstupem
+                main_output, main_features = extract_swinunetr_features(main_model, transformed)
+                
+                # Inverzní transformace výstupu (pokud je potřeba)
+                if hasattr(transform, 'inverse'):
+                    main_output = transform.inverse(main_output)
+                
+                tta_outputs.append(main_output)
+                tta_features_list.append(main_features)
+            
+            # Průměrování TTA výsledků
+            main_output = torch.mean(torch.stack(tta_outputs), dim=0)
+            
+            # Pro feature fusion použijeme pouze první sadu příznaků (bez TTA)
+            # Extrakce příznaků je výpočetně náročná, proto použijeme pouze jednu sadu
+            main_features = tta_features_list[0]
+        else:
+            # Standardní inference bez TTA
+            main_output, main_features = extract_swinunetr_features(main_model, input_tensor)
+    
+    # Převedeme výstup hlavního modelu na numpy
+    main_prob_map = F.softmax(main_output, dim=1).cpu().numpy()[0]  # (C, D, H, W)
+    standard_pred_binary = np.argmax(main_prob_map, axis=0).astype(np.int32)  # (D, H, W)
+    
+    main_model_time = time.time() - start_time_main
+    print(f"Inference s hlavním modelem dokončena za {main_model_time:.2f}s")
+    
+    # Identifikace ROI pro malé léze na základě segmentace hlavního modelu
+    if np.max(standard_pred_binary) > 0:
+        # Hledáme spojené komponenty v binární masce
+        from scipy import ndimage
+        labeled_array, num_features = ndimage.label(standard_pred_binary)
+        
+        # Analýza jednotlivých komponent
+        print(f"Nalezeno {num_features} potenciálních lézí v predikci hlavního modelu")
+        
+        # Vytvoříme masku pro "malé léze" podle definovaného thresholdu
+        small_lesion_mask = np.zeros_like(standard_pred_binary)
+        
+        # Počítadla pro diagnostiku
+        small_lesion_count = 0
+        larger_lesion_count = 0
+        
+        # Analýza velikosti každé léze
+        for i in range(1, num_features + 1):
+            component = (labeled_array == i)
+            component_size = np.sum(component)
+            
+            if component_size <= small_lesion_max_voxels:
+                small_lesion_mask[component] = 1
+                small_lesion_count += 1
+            else:
+                larger_lesion_count += 1
+        
+        # Informace o identifikovaných lézích
+        total_small_lesion_voxels = np.sum(small_lesion_mask)
+        print(f"Identifikováno {small_lesion_count} malých lézí ({total_small_lesion_voxels} voxelů) a {larger_lesion_count} větších lézí")
+        
+        # Vytvoříme ROI mask s malým rozšířením kolem malých lézí
+        from scipy.ndimage import binary_dilation
+        roi_mask = binary_dilation(small_lesion_mask, iterations=10).astype(np.int32)
+        
+        # Statistiky ROI
+        roi_voxels = np.sum(roi_mask)
+        print(f"ROI pro malé léze obsahuje {roi_voxels} voxelů ({roi_voxels / (roi_mask.shape[0] * roi_mask.shape[1] * roi_mask.shape[2]) * 100:.2f}% objemu)")
+    else:
+        print("Hlavní model nedetekoval žádné léze")
+        roi_mask = np.zeros_like(standard_pred_binary)
+        small_lesion_count = 0
+        larger_lesion_count = 0
+    
+    # Provedeme inferenci s menším modelem pomocí feature fusion
+    print(f"Provádím inferenci s vylepšeným modelem pro malé léze...")
+    start_time_small = time.time()
+    
+    # Vylepšená inferece s model pro malé léze využívající feature fusion
+    with torch.no_grad():
+        if use_feature_fusion:
+            # Použití feature fusion pro předání příznaků z hlavního modelu
+            small_output = small_model(input_tensor, main_features)
+        else:
+            # Standardní inferece bez feature fusion
+            small_output = small_model(input_tensor)
+        
+        # Aplikace softmax pro získání pravděpodobnostní mapy
+        small_lesion_prob_map = F.softmax(small_output, dim=1).cpu().numpy()[0]  # (C, D, H, W)
+    
+    small_lesion_time = time.time() - start_time_small
+    print(f"Inference s modelem pro malé léze dokončena za {small_lesion_time:.2f}s")
+    
+    # Vytvoření binární masky z pravděpodobnostní mapy
+    small_pred_binary = np.argmax(small_lesion_prob_map, axis=0).astype(np.int32)
+    
+    # Kombinování výsledků podle zvoleného režimu
+    if cascaded_mode == "roi_only":
+        # V tomto režimu pouze nahradíme oblasti ROI predikcí z malého modelu
+        final_pred = standard_pred_binary.copy()
+        final_pred[roi_mask > 0] = small_pred_binary[roi_mask > 0]
+        
+        print(f"ROI režim: Nahrazeno {np.sum(roi_mask)} voxelů v ROI predikcí z modelu pro malé léze")
+    else:
+        # V kombinovaném režimu provedeme pokročilou kombinaci predikcí
+        print(f"Kombinovaný režim: Provádím pokročilou kombinaci predikcí...")
+        
+        # Inicializace finální predikce
+        final_pred = np.zeros_like(standard_pred_binary)
+        
+        # Pravděpodobnosti pozitivní třídy z obou modelů
+        main_probs = main_prob_map[1]  # Pravděpodobnosti pro třídu 1 (léze)
+        small_probs = small_lesion_prob_map[1]
+        
+        # Základní váhy pro oba modely
+        main_weight = alpha
+        small_weight = 1.0 - alpha
+        
+        if adaptive_weight:
+            # Adaptivní vážení založené na confidence
+            confidence_mask = np.zeros_like(main_probs)
+            
+            # Vyšší váha pro vysokou confidence
+            high_conf_mask_main = main_probs > high_conf_threshold
+            high_conf_mask_small = small_probs > high_conf_threshold
+            
+            # Posílení vah pro vysokou confidence
+            main_boost = np.ones_like(main_probs) * main_weight
+            main_boost[high_conf_mask_main] = main_weight * confidence_boost_factor
+            
+            small_boost = np.ones_like(small_probs) * small_weight
+            small_boost[high_conf_mask_small] = small_weight * confidence_boost_factor
+            
+            # Kombinovaná váha s posílením
+            total_boost = main_boost + small_boost
+            main_weight_map = main_boost / np.maximum(total_boost, 1e-5)
+            small_weight_map = small_boost / np.maximum(total_boost, 1e-5)
+            
+            # Aplikace vážení založeného na velikosti léze
+            if size_based_weight:
+                # Vyšší váha pro malý model v oblastech malých lézí
+                main_weight_map[small_lesion_mask > 0] *= 0.7
+                small_weight_map[small_lesion_mask > 0] *= 1.3
+                
+                # Normalizace vah
+                total_weights = main_weight_map + small_weight_map
+                main_weight_map = main_weight_map / np.maximum(total_weights, 1e-5)
+                small_weight_map = small_weight_map / np.maximum(total_weights, 1e-5)
+            
+            # Kombinace pravděpodobností s adaptivními vahami
+            combined_probs = main_weight_map * main_probs + small_weight_map * small_probs
+        else:
+            # Standardní kombinace s pevnými vahami
+            combined_probs = main_weight * main_probs + small_weight * small_probs
+        
+        # Prahování pro získání binární masky
+        final_pred = (combined_probs > small_lesion_threshold).astype(np.int32)
+    
+    # Základní diagnostické statistiky
+    main_positive = np.sum(standard_pred_binary > 0)
+    small_positive = np.sum(small_pred_binary > 0)
+    final_positive = np.sum(final_pred > 0)
+    
+    print(f"\n===== STATISTIKY SEGMENTACE =====")
+    print(f"Hlavní model: {main_positive} pozitivních voxelů")
+    print(f"Model pro malé léze: {small_positive} pozitivních voxelů")
+    print(f"Finální predikce: {final_positive} pozitivních voxelů")
+    
+    # Pokud máme hlavní i malý model, spočítáme příspěvek každého z nich
+    if cascaded_mode == "combined" and main_positive > 0 and small_positive > 0:
+        # Počet voxelů detekovaných pouze hlavním modelem
+        only_main = np.sum((standard_pred_binary > 0) & (small_pred_binary == 0) & (final_pred > 0))
+        
+        # Počet voxelů detekovaných pouze malým modelem
+        only_small = np.sum((standard_pred_binary == 0) & (small_pred_binary > 0) & (final_pred > 0))
+        
+        # Počet voxelů detekovaných oběma modely
+        both = np.sum((standard_pred_binary > 0) & (small_pred_binary > 0) & (final_pred > 0))
+        
+        print(f"\n===== PŘÍSPĚVEK MODELŮ =====")
+        print(f"Pouze hlavní model: {only_main} voxelů ({only_main / final_positive * 100:.2f}%)")
+        print(f"Pouze model pro malé léze: {only_small} voxelů ({only_small / final_positive * 100:.2f}%)")
+        print(f"Oba modely: {both} voxelů ({both / final_positive * 100:.2f}%)")
+        
+        # Počet malých vs. velkých lézí
+        final_standard = np.sum((standard_pred_binary > 0) & (final_pred > 0))
+        final_small = np.sum((small_pred_binary > 0) & (final_pred > 0))
+        print(f"Standardních lézí: {final_standard}, Malých lézí: {final_small}")
+        print(f"  Rozdíl: {final_small - final_standard} lézí")
+    
+    # Výpočet metrik, pokud je k dispozici ground truth
+    metrics = {}
+    if lab_np is not None:
+        from src.utils.metrics import compute_all_metrics
+        metrics = compute_all_metrics(final_pred, lab_np, include_surface_metrics=True)
+        print(f"\n===== METRIKY =====")
+        for metric_name, metric_value in metrics.items():
+            print(f"{metric_name}: {metric_value:.4f}")
+
+    # Vytvoření výsledného slovníku
+    result = {
+        "prediction": final_pred,
+        "metrics": metrics,
+        "small_lesion_metrics": {},  # TODO: Přidat metriky pro model malých lézí
+        "timing": {
+            "small_lesion_model": small_lesion_time,
+            "main_model": main_model_time,
+            "total": small_lesion_time + main_model_time
+        }
+    }
+    
+    # Přidání diagnositických informací
+    result["diagnostics"] = {
+        "processed_shape": input_vol.shape,
+        "foreground_voxels": np.sum(final_pred > 0),
+        "small_lesion_foreground_voxels": np.sum(small_pred_binary > 0),
+        "main_model_foreground_voxels": np.sum(standard_pred_binary > 0),
+        "cascaded_mode": cascaded_mode,
+        "use_feature_fusion": use_feature_fusion
     }
     
     return result 

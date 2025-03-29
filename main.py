@@ -47,7 +47,8 @@ from src.inference.inference import (
     save_segmentation_with_metrics,
     infer_full_volume_cascaded,
     get_tta_transforms,
-    save_validation_results_pdf
+    save_validation_results_pdf,
+    infer_full_volume_enhanced_cascade,
 )
 from src.models import create_model
 from src.utils import setup_wandb
@@ -868,13 +869,31 @@ def run_inference(config):
     if config.get("use_cascaded_approach", False):
         # Import funkcí pro malé léze
         from src.models import create_small_lesion_model
-        from src.inference import infer_full_volume_cascaded
+        from src.inference import infer_full_volume_cascaded, infer_full_volume_enhanced_cascade
         
         # Kontrola, zda je cesta k modelu pro malé léze zadána nebo máme ensemble
         small_lesion_model = None
         small_lesion_models = []  # Pro ensemble
         
-        if use_ensemble and small_lesion_model_paths:
+        # Pro vylepšený kaskádový přístup vytvoříme AttentionResUNet
+        if config.get("use_enhanced_cascade", False):
+            print("Používám vylepšený kaskádový přístup s AttentionResUNet a feature fusion")
+            from src.models import create_attention_resunet
+            
+            # Vytvoření AttentionResUNet modelu
+            enhanced_model = create_attention_resunet(
+                in_channels=config["in_channels"],
+                out_channels=config["out_channels"],
+                features=config.get("enhanced_model_features", [32, 64, 128, 256]),
+                use_cbam=config.get("use_cbam", True),
+                enable_fusion=config.get("use_feature_fusion", True)
+            ).to(device)
+            
+            # Nastavení referenčního modelu (vylepšený model bude použit v run_inference)
+            small_lesion_model = enhanced_model
+            print("AttentionResUNet model úspěšně vytvořen")
+            
+        elif use_ensemble and small_lesion_model_paths:
             # Vytvoření ensemble modelů pro malé léze
             for sl_path in small_lesion_model_paths:
                 sl_model = create_small_lesion_model(
@@ -1063,24 +1082,51 @@ def run_inference(config):
                 if config.get("use_tta", True):
                     tta_transforms = get_tta_transforms(angle_max=config.get("tta_angle_max", 3))
                 
-                result = infer_full_volume_cascaded(
-                    input_vol=input_vol,
-                    main_model=main_model,
-                    small_lesion_model=small_lesion_model,
-                    device=device,
-                    use_tta=config.get("use_tta", True),
-                    tta_transforms=tta_transforms,
-                    cascaded_mode=config.get("cascaded_mode", "combined"),
-                    small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
-                    patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
-                    small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
-                    # Parametry pro pokročilou kombinaci predikcí
-                    alpha=config.get("combine_alpha", 0.6),
-                    confidence_boost_factor=config.get("combine_boost_factor", 1.5),
-                    high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
-                    adaptive_weight=config.get("combine_adaptive", True),
-                    size_based_weight=config.get("combine_size_based", True)
-                )
+                # Rozhodnutí, zda použít vylepšenou kaskádovou inferenci nebo standardní
+                if config.get("use_enhanced_cascade", False):
+                    # Vylepšená kaskádová inference s AttentionResUNet a feature fusion
+                    print("Používám vylepšenou kaskádovou inferenci s AttentionResUNet...")
+                    result = infer_full_volume_enhanced_cascade(
+                        input_vol=input_vol,
+                        main_model=main_model,
+                        small_model=small_lesion_model,
+                        device=device,
+                        use_tta=config.get("use_tta", True),
+                        tta_transforms=tta_transforms,
+                        lab_vol=label_path if label_path else None,
+                        cascaded_mode=config.get("cascaded_mode", "combined"),
+                        small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                        patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
+                        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+                        # Parametry pro pokročilou kombinaci predikcí
+                        alpha=config.get("combine_alpha", 0.6),
+                        confidence_boost_factor=config.get("combine_boost_factor", 1.5),
+                        high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
+                        adaptive_weight=config.get("combine_adaptive", True),
+                        size_based_weight=config.get("combine_size_based", True),
+                        # Parametry pro feature fusion
+                        use_feature_fusion=config.get("use_feature_fusion", True)
+                    )
+                else:
+                    # Standardní kaskádová inference
+                    result = infer_full_volume_cascaded(
+                        input_vol=input_vol,
+                        main_model=main_model,
+                        small_lesion_model=small_lesion_model,
+                        device=device,
+                        use_tta=config.get("use_tta", True),
+                        tta_transforms=tta_transforms,
+                        cascaded_mode=config.get("cascaded_mode", "combined"),
+                        small_lesion_threshold=config.get("small_lesion_threshold", 0.5),
+                        patch_size=tuple(config.get("small_lesion_patch_size", (16, 16, 16))),
+                        small_lesion_max_voxels=config.get("small_lesion_max_voxels", 50),
+                        # Parametry pro pokročilou kombinaci predikcí
+                        alpha=config.get("combine_alpha", 0.6),
+                        confidence_boost_factor=config.get("combine_boost_factor", 1.5),
+                        high_conf_threshold=config.get("combine_high_conf_threshold", 0.8),
+                        adaptive_weight=config.get("combine_adaptive", True),
+                        size_based_weight=config.get("combine_size_based", True)
+                    )
         
         elif config["inference_mode"] == "moe" and expert_model is not None:
             # MoE inference
@@ -1273,6 +1319,17 @@ def main():
                         help="Vypnout adaptivní váhování podle velikosti a jistoty")
     parser.add_argument("--combine_disable_size_weighting", action="store_false", dest="combine_size_based",
                         help="Vypnout váhování podle velikosti léze")
+
+    # Argumenty pro vylepšený kaskádový přístup
+    parser.add_argument("--use_enhanced_cascade", action="store_true",
+                        help="Použít vylepšený kaskádový přístup s AttentionResUNet")
+    parser.add_argument("--no_cbam", action="store_false", dest="use_cbam",
+                        help="Vypnout CBAM bloky v AttentionResUNet")
+    parser.add_argument("--no_feature_fusion", action="store_false", dest="use_feature_fusion",
+                        help="Vypnout feature fusion z hlavního modelu do AttentionResUNet")
+    parser.add_argument("--enhanced_model_features", nargs="+", type=int, 
+                        default=[32, 64, 128, 256],
+                        help="Velikosti příznaků pro každou úroveň AttentionResUNet")
 
     # Aktualizace konfigurace z argumentů
     args = parser.parse_args()
