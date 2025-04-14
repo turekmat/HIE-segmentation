@@ -11,22 +11,22 @@ def get_loss_function(loss_name, alpha=0, class_weights=None,
                       focal_alpha=0.75, focal_gamma=2.0, alpha_mix=0.6,
                       out_channels=2):
     """
-    Vrátí ztrátovou funkci podle zadaného jména.
+    Returns loss function based on the given name.
     
     Args:
-        loss_name (str): Jméno ztrátové funkce
-        alpha (float): Parametr vyvážení pro kombinované ztráty
-        class_weights (torch.Tensor): Váhy tříd pro CrossEntropyLoss
-        ft_alpha (float): Alpha parametr pro focal tversky loss
-        ft_beta (float): Beta parametr pro focal tversky loss
-        ft_gamma (float): Gamma parametr pro focal tversky loss
-        focal_alpha (float): Alpha parametr pro focal loss
-        focal_gamma (float): Gamma parametr pro focal loss
-        alpha_mix (float): Parametr míchání pro combined_focal_dice_loss
-        out_channels (int): Počet výstupních kanálů
+        loss_name (str): Name of the loss function
+        alpha (float): Balance parameter for combined losses
+        class_weights (torch.Tensor): Class weights for CrossEntropyLoss
+        ft_alpha (float): Alpha parameter for focal tversky loss
+        ft_beta (float): Beta parameter for focal tversky loss
+        ft_gamma (float): Gamma parameter for focal tversky loss
+        focal_alpha (float): Alpha parameter for focal loss
+        focal_gamma (float): Gamma parameter for focal loss
+        alpha_mix (float): Mixing parameter for combined_focal_dice_loss
+        out_channels (int): Number of output channels
         
     Returns:
-        callable: Ztrátová funkce
+        callable: Loss function
     """
     if loss_name == "weighted_ce":
         ce_criterion = torch.nn.CrossEntropyLoss(weight=class_weights)
@@ -126,18 +126,18 @@ def combined_focal_dice_loss(
     eps:        float = 1e-6
 ) -> torch.Tensor:
     """
-    Kombinace Focal Loss a Dice Loss.
+    Combination of Focal Loss and Dice Loss.
     
     Args:
         logits: Model output logits
         labels: Ground truth labels
-        focal_alpha: Alpha parametr pro focal loss
-        focal_gamma: Gamma parametr pro focal loss
-        alpha_mix: Váha mezi focal a dice loss
-        eps: Epsilon pro numerickou stabilitu
+        focal_alpha: Alpha parameter for focal loss
+        focal_gamma: Gamma parameter for focal loss
+        alpha_mix: Weight between focal and dice loss
+        eps: Epsilon for numerical stability
         
     Returns:
-        torch.Tensor: Výsledná ztráta
+        torch.Tensor: Resulting loss
     """
     focal_val = focal_loss(
         logits=logits,
@@ -161,14 +161,14 @@ def focal_loss(
     eps:   float = 1e-6
 ) -> torch.Tensor:
     """
-    Implementace Focal Loss pro binární segmentaci.
+    Implementation of Focal Loss for binary segmentation.
     
     Args:
         logits: Model output logits
         labels: Ground truth labels
-        alpha: Váhový faktor pro pozitivní třídu
-        gamma: Focusing parametr (redukce well-classified examples)
-        eps: Epsilon pro numerickou stabilitu
+        alpha: Weight factor for positive class
+        gamma: Focusing parameter (reduction of well-classified examples)
+        eps: Epsilon for numerical stability
         
     Returns:
         torch.Tensor: Focal loss
@@ -193,13 +193,13 @@ def log_hausdorff_loss(
     eps:   float = 1e-5
 ) -> torch.Tensor:
     """
-    Logarithmická Hausdorff loss funkce.
+    Logarithmic Hausdorff loss function.
     
     Args:
         logits: Model output logits
         labels: Ground truth labels
-        alpha: Parametr pro penalizaci
-        eps: Epsilon pro numerickou stabilitu
+        alpha: Parameter for penalization
+        eps: Epsilon for numerical stability
         
     Returns:
         torch.Tensor: Log-Hausdorff loss
@@ -236,15 +236,15 @@ def focal_tversky_loss(
     smooth: float= 1.0
 ) -> torch.Tensor:
     """
-    Focal Tversky Loss - varianta dice loss s penalizací FP a FN a focal weighting.
+    Focal Tversky Loss - a dice loss variant with penalization for FP and FN and focal weighting.
     
     Args:
         logits: Model output logits
         labels: Ground truth labels
-        alpha: Váha pro false negatives
-        beta: Váha pro false positives
+        alpha: Weight for false negatives
+        beta: Weight for false positives
         gamma: Focal exponent
-        smooth: Smooth faktor pro výpočet indexu
+        smooth: Smooth factor for index calculation
         
     Returns:
         torch.Tensor: Focal Tversky Loss
@@ -268,15 +268,15 @@ def focal_tversky_loss(
 
 def soft_dice_loss(logits, labels, smooth=1.0):
     """
-    Soft Dice Loss pro binární segmentaci.
+    Soft Dice Loss for binary segmentation.
     
     Args:
         logits: Model output logits
         labels: Ground truth labels
-        smooth: Smooth faktor pro výpočet Dice koeficientu
+        smooth: Smooth factor for Dice coefficient calculation
         
     Returns:
-        torch.Tensor: 1 - Dice koeficient
+        torch.Tensor: 1 - Dice coefficient
     """
     prob = F.softmax(logits, dim=1)
     fg   = prob[:,1]
@@ -289,15 +289,15 @@ def soft_dice_loss(logits, labels, smooth=1.0):
 
 def dice_coefficient(pred, labels, smooth=1.0):
     """
-    Vypočítá Dice koeficient mezi predikcí a referencí.
+    Calculates Dice coefficient between prediction and reference.
     
     Args:
-        pred: Predikce (numpy array)
+        pred: Prediction (numpy array)
         labels: Reference (numpy array)
-        smooth: Smooth faktor
+        smooth: Smooth factor
         
     Returns:
-        float: Dice koeficient (0-1)
+        float: Dice coefficient (0-1)
     """
     pred_fg = (pred == 1).astype(np.float32)
     target_fg = (labels == 1).astype(np.float32)
@@ -317,10 +317,10 @@ def weighted_ce_plus_dice_loss(logits, labels, ce_criterion, alpha=0.5):
         logits: Model output logits
         labels: Ground truth labels
         ce_criterion: Cross-entropy loss functor
-        alpha: Váha pro Dice loss
+        alpha: Weight for Dice loss
         
     Returns:
-        torch.Tensor: Kombinovaná ztráta
+        torch.Tensor: Combined loss
     """
     ce_loss = ce_criterion(logits, labels)     # Weighted CE
     dice_l  = soft_dice_loss(logits, labels)   # 1 - Dice coefficient
@@ -358,19 +358,19 @@ def log_cosh_dice_loss(logits, labels, smooth=1.0):
 
 def compute_loss_per_sample(loss_fn, logits, labels):
     """
-    Vypočítá ztrátu pro každý vzorek zvlášť.
+    Calculates loss for each sample separately.
     
     Args:
-        loss_fn: Ztrátová funkce
+        loss_fn: Loss function
         logits: Model output logits 
         labels: Ground truth labels
         
     Returns:
-        torch.Tensor: Tensor ztrát pro každý vzorek
+        torch.Tensor: Tensor of losses for each sample
     """
     batch_losses = []
     for i in range(logits.shape[0]):
-        # Vybereme i-tý vzorek a přidáme dimenzi batch
+        # Select i-th sample and add batch dimension
         sample_loss = loss_fn(logits[i].unsqueeze(0), labels[i].unsqueeze(0))
         batch_losses.append(sample_loss)
-    return torch.stack(batch_losses)  # vrátí tensor tvaru [B] 
+    return torch.stack(batch_losses)  # returns tensor of shape [B] 

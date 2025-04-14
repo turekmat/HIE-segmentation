@@ -4,8 +4,8 @@ import torch.nn.functional as F
 
 def create_feature_maps(init_channel_number, number_of_fmaps):
     """
-    Vygeneruje list velikostí feature map.
-    Defaultně pro 6 úrovní (můžete přizpůsobit).
+    Generates a list of feature map sizes.
+    Default for 6 levels (can be customized).
     """
     return [init_channel_number * 2 ** k for k in range(number_of_fmaps)]
 
@@ -40,8 +40,8 @@ def conv3d(in_channels, out_channels, kernel_size, bias, padding=1):
 
 
 def create_conv(in_channels, out_channels, kernel_size, order, num_groups, padding=1):
-    assert 'c' in order, "Konvoluce (c) musí být ve stringu order"
-    assert order[0] not in 'rle', "Nejprve musí být konvoluce, pak až aktivace"
+    assert 'c' in order, "Convolution (c) must be in the order string"
+    assert order[0] not in 'rle', "Convolution must come first, then activation"
 
     modules = []
     for i, char in enumerate(order):
@@ -65,7 +65,7 @@ def create_conv(in_channels, out_channels, kernel_size, order, num_groups, paddi
             else:
                 modules.append(('batchnorm', nn.BatchNorm3d(out_channels)))
         else:
-            raise ValueError(f"Neznámý znak vrstvy '{char}'. Povolené: ['b','g','r','l','e','c']")
+            raise ValueError(f"Unknown layer character '{char}'. Allowed: ['b','g','r','l','e','c']")
 
     return modules
 
@@ -89,12 +89,12 @@ class DoubleConv(nn.Sequential):
     ):
         super().__init__()
         if encoder:
-            # Zpravidla pro enkodér
+            # Typically for encoder
             conv1_out = max(in_channels, out_channels // 2)
             self.add_module('SingleConv1', SingleConv(in_channels, conv1_out, kernel_size, order, num_groups))
             self.add_module('SingleConv2', SingleConv(conv1_out, out_channels, kernel_size, order, num_groups))
         else:
-            # Dekodér
+            # Decoder
             self.add_module('SingleConv1', SingleConv(in_channels, out_channels, kernel_size, order, num_groups))
             self.add_module('SingleConv2', SingleConv(out_channels, out_channels, kernel_size, order, num_groups))
 
@@ -113,7 +113,7 @@ class Encoder(nn.Module):
         num_groups=8
     ):
         super().__init__()
-        assert pool_type in ['max', 'avg'], "pool_type musí být 'max' nebo 'avg'"
+        assert pool_type in ['max', 'avg'], "pool_type must be 'max' or 'avg'"
 
         if apply_pooling:
             if pool_type == 'max':
@@ -151,7 +151,7 @@ class Decoder(nn.Module):
         num_groups=8
     ):
         super().__init__()
-        self.upsample = None  # v originále by šlo nastavit ConvTranspose...
+        self.upsample = None  # in the original it would be possible to set ConvTranspose...
 
         self.scse = SCA3D(in_channels)
 
@@ -169,11 +169,11 @@ class Decoder(nn.Module):
             # nearest neighbor upsampling
             out_size = encoder_features.size()[2:]  # D,H,W
             x = F.interpolate(x, size=out_size, mode='nearest')
-            # skip: spojit enkodérové a dekód. feature mapy
+            # skip: connect encoder and decoder feature maps
             x = torch.cat((encoder_features, x), dim=1)
         else:
-            # pokud byste chtěli ConvTranspose3d => x = self.upsample(x) ; x += encoder_features
-            raise NotImplementedError("V této verzi se pro upsampling používá nearest+concat.")
+            # if you wanted to use ConvTranspose3d => x = self.upsample(x) ; x += encoder_features
+            raise NotImplementedError("In this version, nearest+concat is used for upsampling.")
 
         x = self.scse(x)
         x = self.basic_module(x)
@@ -182,13 +182,13 @@ class Decoder(nn.Module):
 
 class AttentionUNet(nn.Module):
     """
-    3D U-Net s "attention" (SCA3D) v dekodéru.
-    - in_channels: počet vstupních kanálů (např. 2 => [ADC, Z_ADC])
-    - out_channels: počet výstupních kanálů (pro segmentaci => 2 => [BG, FG])
-    - final_sigmoid: zda aplikovat Sigmoid na výstup (True pro binární, False -> Softmax)
-    - f_maps: základní počet feature map (16, 32, 64, 128, 256, 512 atp.)
-    - layer_order: např. "crg" => Conv + ReLU + GroupNorm
-    - num_groups: pro GroupNorm
+    3D U-Net with "attention" (SCA3D) in the decoder.
+    - in_channels: number of input channels (e.g. 2 => [ADC, Z_ADC])
+    - out_channels: number of output channels (for segmentation => 2 => [BG, FG])
+    - final_sigmoid: whether to apply Sigmoid to the output (True for binary, False -> Softmax)
+    - f_maps: base number of feature maps (16, 32, 64, 128, 256, 512 etc.)
+    - layer_order: e.g. "crg" => Conv + ReLU + GroupNorm
+    - num_groups: for GroupNorm
     """
     def __init__(
         self,
@@ -203,7 +203,7 @@ class AttentionUNet(nn.Module):
         super().__init__()
 
         if isinstance(f_maps, int):
-            # např. 16, 32, 64, 128, 256, 512 atd. (6 úrovní)
+            # e.g. 16, 32, 64, 128, 256, 512 etc. (6 levels)
             f_maps = create_feature_maps(f_maps, number_of_fmaps=6)
 
         # --- ENCODERS ---

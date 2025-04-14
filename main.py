@@ -9,7 +9,7 @@ import pickle
 from pathlib import Path
 from torch.utils.data import Subset
 
-# Automatické přihlášení k Weights & Biases pomocí Kaggle secrets (pokud běží v Kaggle)
+# Automatic login to Weights & Biases using Kaggle secrets (if running in Kaggle)
 if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
     try:
         from kaggle_secrets import UserSecretsClient
@@ -17,14 +17,14 @@ if 'KAGGLE_KERNEL_RUN_TYPE' in os.environ:
         wandb_api_key = user_secrets.get_secret("WANDB_API_KEY")
         if wandb_api_key:
             wandb.login(key=wandb_api_key)
-            print("Úspěšně přihlášeno do wandb pomocí Kaggle secrets!")
+            print("Successfully logged into wandb using Kaggle secrets!")
         else:
-            print("Varování: WANDB_API_KEY nenalezen v Kaggle secrets.")
-            print("Wandb logování bude vypnuto.")
+            print("Warning: WANDB_API_KEY not found in Kaggle secrets.")
+            print("Wandb logging will be disabled.")
             os.environ['WANDB_MODE'] = 'disabled'
     except Exception as e:
-        print(f"Nepodařilo se přihlásit do wandb: {e}")
-        print("Wandb logování bude vypnuto.")
+        print(f"Failed to log into wandb: {e}")
+        print("Wandb logging will be disabled.")
         os.environ['WANDB_MODE'] = 'disabled'
 
 from src.config import get_default_config, parse_args_to_config
@@ -44,7 +44,7 @@ from src.inference.inference import (
 )
 
 def set_seed(seed):
-    """Nastavení fixního seedu pro reprodukovatelnost"""
+    """Sets a fixed seed for reproducibility"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -57,31 +57,31 @@ def set_seed(seed):
 
 def get_optimal_patch_size(dataset, requested_patch_size, min_dim_size=16):
     """
-    Určí optimální velikost patche na základě rozměrů dat v datasetu.
+    Determines the optimal patch size based on the dimensions of the data in the dataset.
     
     Args:
-        dataset: Dataset, ze kterého budeme zjišťovat rozměry
-        requested_patch_size: Požadovaná velikost patche [D, H, W]
-        min_dim_size: Minimální velikost pro jednu dimenzi
+        dataset: Dataset from which to determine dimensions
+        requested_patch_size: Requested patch size [D, H, W]
+        min_dim_size: Minimum size for one dimension
         
     Returns:
-        tuple: Optimální velikost patche [D, H, W]
+        tuple: Optimal patch size [D, H, W]
     """
     if not dataset or len(dataset) == 0:
-        print("Varování: Prázdný dataset, nemohu určit optimální velikost patche.")
+        print("Warning: Empty dataset, cannot determine optimal patch size.")
         return requested_patch_size
     
     try:
-        # Získat první vzorek z datasetu
+        # Get the first sample from the dataset
         sample_data, _ = dataset[0]
         
-        # Zjistit shape - předpokládáme [C, D, H, W]
+        # Get shape - assume [C, D, H, W]
         input_shape = sample_data.shape[1:]  # [D, H, W]
         
-        print(f"Rozměry vstupních dat: {input_shape}")
-        print(f"Požadovaná velikost patche: {requested_patch_size}")
+        print(f"Input data dimensions: {input_shape}")
+        print(f"Requested patch size: {requested_patch_size}")
         
-        # Kontrola, jestli patch size není větší než vstupní dimensions
+        # Check if patch size is larger than input dimensions
         optimal_patch = list(requested_patch_size)
         need_adjustment = False
         
@@ -91,44 +91,44 @@ def get_optimal_patch_size(dataset, requested_patch_size, min_dim_size=16):
                 need_adjustment = True
         
         if need_adjustment:
-            print(f"Upravená velikost patche: {optimal_patch}")
+            print(f"Adjusted patch size: {optimal_patch}")
         
-        # Zkontrolovat, zda je velikost patche dělitelná 16 (pro SwinUNETR)
+        # Check if patch size is divisible by 16 (for SwinUNETR)
         for i in range(len(optimal_patch)):
             if optimal_patch[i] % 16 != 0:
-                # Zaokrouhlit dolů na nejbližší násobek 16
+                # Round down to the nearest multiple of 16
                 optimal_patch[i] = (optimal_patch[i] // 16) * 16
                 if optimal_patch[i] < min_dim_size:
                     optimal_patch[i] = min_dim_size
         
-        # Další kontrola po úpravách
+        # Additional check after adjustments
         if optimal_patch != list(requested_patch_size):
-            print(f"Finální velikost patche po úpravě na násobky 16: {optimal_patch}")
+            print(f"Final patch size after adjustment to multiples of 16: {optimal_patch}")
         
         return tuple(optimal_patch)
     
     except Exception as e:
-        print(f"Chyba při určování optimální velikosti patche: {e}")
+        print(f"Error determining optimal patch size: {e}")
         return requested_patch_size
 
 
 def create_fixed_split(dataset, split_ratio=0.8, extended_dataset=False, split_seed=None):
     """
-    Vytvoří pevné rozdělení dat na trénovací a validační sadu (bez k-fold CV).
+    Creates a fixed split of data into training and validation sets (without k-fold CV).
     
     Args:
-        dataset: Dataset k rozdělení
-        split_ratio: Poměr trénovacích dat (např. 0.8 = 80% train, 20% validation)
-        extended_dataset: Zda se jedná o rozšířený dataset s orig/aug soubory
-        split_seed: Specifický seed pro rozdělení (pokud None, použije se globální seed)
+        dataset: Dataset to split
+        split_ratio: Ratio of training data (e.g., 0.8 = 80% train, 20% validation)
+        extended_dataset: Whether this is an extended dataset with orig/aug files
+        split_seed: Specific seed for splitting (if None, uses global seed)
         
     Returns:
-        list: Seznam s jedním foldem [train_indices, val_indices]
+        list: List with a single fold [train_indices, val_indices]
     """
-    # Získání všech souborů
+    # Get all files
     all_files = dataset.adc_files
     
-    # Rozdělení podle subjektů
+    # Split by subjects
     subject_to_indices = {}
     for i, fname in enumerate(all_files):
         subj_id = get_subject_id_from_filename(fname)
@@ -136,27 +136,27 @@ def create_fixed_split(dataset, split_ratio=0.8, extended_dataset=False, split_s
             subject_to_indices[subj_id] = []
         subject_to_indices[subj_id].append(i)
     
-    # Seznam všech subjektů (promíchaný s použitím zadaného seedu)
+    # List of all subjects (shuffled using the specified seed)
     all_subjects = list(subject_to_indices.keys())
     
-    # Pokud je zadán vlastní seed pro rozdělení, použijeme ho
+    # If a custom seed for splitting is provided, use it
     if split_seed is not None:
         rng = np.random.RandomState(split_seed)
         rng.shuffle(all_subjects)
     else:
         np.random.shuffle(all_subjects)
     
-    # Výpočet dělícího bodu pro split
+    # Calculate the split point
     split_idx = int(len(all_subjects) * split_ratio)
     
-    # Výběr subjektů pro training a validation
+    # Select subjects for training and validation
     train_subjects = all_subjects[:split_idx]
     val_subjects = all_subjects[split_idx:]
     
-    # Výběr validačních a trénovacích indexů
+    # Select validation and training indices
     val_indices = []
     if extended_dataset:
-        # Pokud máme rozšířený dataset, vybíráme pouze soubory bez "_aug" označení
+        # If we have an extended dataset, select only files without "_aug" marking
         for subj_id in val_subjects:
             indices_for_subject = subject_to_indices[subj_id]
             for idx in indices_for_subject:
@@ -164,47 +164,47 @@ def create_fixed_split(dataset, split_ratio=0.8, extended_dataset=False, split_s
                 if "_aug" not in adc_fname.lower():
                     val_indices.append(idx)
     else:
-        # Klasický dataset: použijeme všechny soubory daného subjektu
+        # Standard dataset: use all files of the subject
         for subj_id in val_subjects:
             indices_for_subject = subject_to_indices[subj_id]
             val_indices.extend(indices_for_subject)
     
-    # Výběr trénovacích indexů - všechny soubory subjektů, které nejsou ve validaci
+    # Select training indices - all files of subjects that are not in validation
     train_indices = []
     for subj_id in train_subjects:
         indices_for_subject = subject_to_indices[subj_id]
         train_indices.extend(indices_for_subject)
     
-    print(f"Pevné rozdělení dat: {len(train_subjects)} trénovacích subjektů ({len(train_indices)} vzorků), "
-          f"{len(val_subjects)} validačních subjektů ({len(val_indices)} vzorků)")
+    print(f"Fixed data split: {len(train_subjects)} training subjects ({len(train_indices)} samples), "
+          f"{len(val_subjects)} validation subjects ({len(val_indices)} samples)")
     
     return [(train_indices, val_indices)]
 
 
 def run_cross_validation(config):
     """
-    Spustí k-fold cross-validaci nebo pevné rozdělení dat.
+    Runs k-fold cross-validation or fixed data split.
     
     Args:
-        config: Konfigurační slovník s parametry
+        config: Configuration dictionary with parameters
     """
-    # Kontrola, zda složky existují
+    # Check if folders exist
     for folder in [config["adc_folder"], config["z_folder"], config["label_folder"]]:
         if not os.path.exists(folder):
-            print(f"Chyba: Složka {folder} neexistuje!")
+            print(f"Error: Folder {folder} does not exist!")
             sys.exit(1)
     
-    # Provedení preprocessingu, pokud je požadováno
+    # Perform preprocessing if requested
     if config.get("preprocessing", False):
         from src.data.preprocessing import prepare_preprocessed_data
         
-        # Nastavení cest pro předzpracovaná data
+        # Set paths for preprocessed data
         preprocessed_adc = config.get("preprocessed_adc_folder", os.path.join(config["output_dir"], "preprocessed/1ADC_ss"))
         preprocessed_z = config.get("preprocessed_z_folder", os.path.join(config["output_dir"], "preprocessed/2Z_ADC"))
         preprocessed_label = config.get("preprocessed_label_folder", os.path.join(config["output_dir"], "preprocessed/3LABEL"))
         
-        # Spuštění preprocessingu
-        print("\nProvádím preprocessing dat...")
+        # Run preprocessing
+        print("\nPerforming data preprocessing...")
         prepare_preprocessed_data(
             adc_folder=config["adc_folder"],
             z_folder=config["z_folder"],
@@ -216,14 +216,14 @@ def run_cross_validation(config):
             allow_normalize_spacing=config.get("allow_normalize_spacing", False)
         )
         
-        # Aktualizace cest na předzpracovaná data
+        # Update paths to preprocessed data
         config["adc_folder"] = preprocessed_adc
         config["z_folder"] = preprocessed_z
         config["label_folder"] = preprocessed_label
         
-        print("Preprocessing dokončen. Používám předzpracovaná data pro trénink.\n")
+        print("Preprocessing complete. Using preprocessed data for training.\n")
     
-    # Inicializace wandb, pokud je povoleno
+    # Initialize wandb if enabled
     if config["use_wandb"]:
         wandb.init(
             project=config["wandb_project"],
@@ -231,10 +231,10 @@ def run_cross_validation(config):
             config=config
         )
     
-    # Nastavení seedu
+    # Set seed
     set_seed(config["seed"])
     
-    # Vytvoření datasetu
+    # Create dataset
     full_dataset = BONBID3DFullVolumeDataset(
         adc_folder=config["adc_folder"],
         z_folder=config["z_folder"],
@@ -246,47 +246,47 @@ def run_cross_validation(config):
         use_z_adc=config["in_channels"] > 1
     )
     
-    # Zjištění optimální velikosti patche
+    # Determine optimal patch size
     if config["training_mode"] == "patch":
         sample_dataset = full_dataset
         if len(sample_dataset) > 0:
             original_patch_size = config["patch_size"]
             optimal_patch_size = get_optimal_patch_size(sample_dataset, original_patch_size)
             
-            # Aktualizace konfigurace s optimální velikostí patche
+            # Update configuration with optimal patch size
             if optimal_patch_size != original_patch_size:
-                print(f"Původní patch_size {original_patch_size} byl upraven na {optimal_patch_size} pro super-resolution data.")
+                print(f"Original patch_size {original_patch_size} was adjusted to {optimal_patch_size} for super-resolution data.")
                 config["patch_size"] = optimal_patch_size
                 
-                # Pokud používáme wandb, aktualizujeme konfiguraci
+                # If using wandb, update configuration
                 if config["use_wandb"]:
                     wandb.config.update({"patch_size": optimal_patch_size}, allow_val_change=True)
     
-    # Vytvoření foldů nebo pevného rozdělení
+    # Create folds or fixed split
     if config.get("fixed_split", False):
-        print("Používám pevné rozdělení dat (80/20) místo k-fold cross-validace...")
+        print("Using fixed data split (80/20) instead of k-fold cross-validation...")
         
-        # Určení cesty k souboru s pevným rozdělením
+        # Determine path to fixed split file
         split_file = config.get("fixed_split_file", None)
         if split_file is None:
-            # Vytvoření jména souboru na základě seedu
+            # Create filename based on seed
             split_seed = config.get("fixed_split_seed", config["seed"])
             split_file = os.path.join(config["output_dir"], f"fixed_split_seed{split_seed}.pkl")
         
-        # Pokud soubor existuje, načteme rozdělení
+        # If file exists, load the split
         if os.path.exists(split_file):
-            print(f"Načítám existující pevné rozdělení ze souboru {split_file}")
+            print(f"Loading existing fixed split from file {split_file}")
             try:
                 with open(split_file, 'rb') as f:
                     split_data = pickle.load(f)
                     train_indices = split_data['train']
                     val_indices = split_data['val']
                 folds = [(train_indices, val_indices)]
-                print(f"Načteno: {len(train_indices)} trénovacích a {len(val_indices)} validačních vzorků")
+                print(f"Loaded: {len(train_indices)} training and {len(val_indices)} validation samples")
             except Exception as e:
-                print(f"Chyba při načítání pevného rozdělení: {e}")
-                print("Vytvářím nové pevné rozdělení...")
-                # Vytvoření nového pevného rozdělení
+                print(f"Error loading fixed split: {e}")
+                print("Creating new fixed split...")
+                # Create a new fixed split
                 split_seed = config.get("fixed_split_seed", config["seed"])
                 folds = create_fixed_split(
                     full_dataset, 
@@ -295,15 +295,15 @@ def run_cross_validation(config):
                     split_seed=split_seed
                 )
                 
-                # Uložení pro pozdější použití
+                # Save for later use
                 train_indices, val_indices = folds[0]
                 split_data = {'train': train_indices, 'val': val_indices}
                 with open(split_file, 'wb') as f:
                     pickle.dump(split_data, f)
-                print(f"Pevné rozdělení uloženo do souboru {split_file}")
+                print(f"Fixed split saved to file {split_file}")
         else:
-            # Vytvoření nového pevného rozdělení
-            print(f"Vytvářím nové pevné rozdělení dat (bude uloženo do {split_file})...")
+            # Create a new fixed split
+            print(f"Creating new fixed data split (will be saved to {split_file})...")
             split_seed = config.get("fixed_split_seed", config["seed"])
             folds = create_fixed_split(
                 full_dataset, 
@@ -312,49 +312,49 @@ def run_cross_validation(config):
                 split_seed=split_seed
             )
             
-            # Uložení pro pozdější použití
+            # Save for later use
             train_indices, val_indices = folds[0]
             split_data = {'train': train_indices, 'val': val_indices}
             with open(split_file, 'wb') as f:
                 pickle.dump(split_data, f)
-            print(f"Pevné rozdělení uloženo do souboru {split_file}")
+            print(f"Fixed split saved to file {split_file}")
     else:
-        # Standardní k-fold CV
-        print(f"Vytváření {config['n_folds']}-fold cross-validace...")
+        # Standard k-fold CV
+        print(f"Creating {config['n_folds']}-fold cross-validation...")
         folds = create_cv_folds(
             full_dataset, 
             config["n_folds"], 
             extended_dataset=config["extended_dataset"]
         )
     
-    # Určení device
+    # Determine device
     device = torch.device(config["device"])
     
-    # Optimalizace GPU paměti
+    # Optimize GPU memory
     if torch.cuda.is_available():
-        print("Optimalizace využití GPU paměti...")
+        print("Optimizing GPU memory usage...")
         torch.cuda.empty_cache()
 
-        # Pokud je k dispozici dostatek GPU, můžeme nastavit specifické optimalizace
+        # If enough GPUs are available, we can set specific optimizations
         if torch.cuda.device_count() > 0:
-            torch.backends.cudnn.benchmark = True  # Může zrychlit trénink
+            torch.backends.cudnn.benchmark = True  # Can speed up training
             
-        # Výpis dostupné paměti GPU
+        # Print available GPU memory
         for i in range(torch.cuda.device_count()):
             free_memory = torch.cuda.get_device_properties(i).total_memory - torch.cuda.memory_allocated(i)
             free_memory_gb = free_memory / (1024 ** 3)
-            print(f"GPU {i}: Volná paměť {free_memory_gb:.2f} GB")
+            print(f"GPU {i}: Free memory {free_memory_gb:.2f} GB")
     
-    # Cykly přes všechny foldy
+    # Cycles through all folds
     all_fold_metrics = []
     
-    # Pro fixní rozdělení bude jen jeden "fold"
+    # For fixed split there will be only one "fold"
     num_folds = 1 if config.get("fixed_split", False) else config["n_folds"]
     
     for fold_idx, (train_indices, val_indices) in enumerate(folds):
-        print(f"\n========== {'FOLD ' + str(fold_idx+1) + '/' + str(num_folds) if not config.get('fixed_split', False) else 'PEVNÉ ROZDĚLENÍ'} ==========")
+        print(f"\n========== {'FOLD ' + str(fold_idx+1) + '/' + str(num_folds) if not config.get('fixed_split', False) else 'FIXED SPLIT'} ==========")
         
-        # Vytvoření trénovacího a validačního datasetu
+        # Create training and validation dataset
         if config["training_mode"] == "patch":
             # Patch-based training
             train_dataset_full = BONBID3DFullVolumeDataset(
@@ -373,7 +373,7 @@ def run_cross_validation(config):
                 inpaint_probability=config.get("inpaint_probability", 0.2)
             )
             
-            # Použití indexů pomocí IndexedDatasetWrapper
+            # Use indices with IndexedDatasetWrapper
             train_dataset_full = Subset(train_dataset_full, train_indices)
             
             train_dataset = BONBID3DPatchDataset(
@@ -396,7 +396,7 @@ def run_cross_validation(config):
                 use_z_adc=config["in_channels"] > 1
             )
             
-            # Použití indexů pomocí IndexedDatasetWrapper
+            # Use indices with IndexedDatasetWrapper
             val_dataset = Subset(val_dataset_full, val_indices)
         else:
             # Full-volume training
@@ -416,7 +416,7 @@ def run_cross_validation(config):
                 inpaint_probability=config.get("inpaint_probability", 0.2)
             )
             
-            # Použití indexů pomocí IndexedDatasetWrapper
+            # Use indices with IndexedDatasetWrapper
             train_dataset = Subset(train_dataset_full, train_indices)
             
             val_dataset_full = BONBID3DFullVolumeDataset(
@@ -429,21 +429,21 @@ def run_cross_validation(config):
                 use_z_adc=config["in_channels"] > 1
             )
             
-            # Použití indexů pomocí IndexedDatasetWrapper
+            # Use indices with IndexedDatasetWrapper
             val_dataset = Subset(val_dataset_full, val_indices)
         
-        # Nastavení trénování
+        # Setup training
         model, optimizer, loss_fn, scheduler, train_loader, val_loader = setup_training(
             config, train_dataset, val_dataset, device=device
         )
         
-        # Ukládání nejlepšího modelu
+        # Save best model
         best_val_dice = 0.0
         fold_metrics = {}
         
-        # Tréninkový cyklus
+        # Training cycle
         for epoch in range(1, config["epochs"] + 1):
-            # Trénování jedné epochy
+            # Train one epoch
             if config["use_ohem"] and epoch >= config["ohem_start_epoch"]:
                 train_loss = train_with_ohem(
                     model=model,
@@ -463,7 +463,7 @@ def run_cross_validation(config):
                     device=device
                 )
             
-            # Validace
+            # Validation
             val_metrics = validate_one_epoch(
                 model=model,
                 loader=val_loader,
@@ -478,11 +478,11 @@ def run_cross_validation(config):
                 sw_overlap=config.get("sw_overlap", 0.5)
             )
             
-            # Aktualizace learning rate
+            # Update learning rate
             curr_lr = optimizer.param_groups[0]['lr']
             scheduler.step()
             
-            # Logování metrik
+            # Log metrics
             metrics = {
                 'train_loss': train_loss,
                 **val_metrics
@@ -496,7 +496,7 @@ def run_cross_validation(config):
                 wandb_enabled=config["use_wandb"]
             )
             
-            # Ukládání nejlepšího modelu
+            # Save best model
             if val_metrics['val_dice'] > best_val_dice:
                 best_val_dice = val_metrics['val_dice']
                 fold_metrics = val_metrics.copy()
@@ -508,42 +508,42 @@ def run_cross_validation(config):
                         f"best_model_fold{fold_idx+1}.pth"
                     )
                     torch.save(model.state_dict(), model_path)
-                    print(f"Uložen nejlepší model pro fold {fold_idx+1}: {model_path}")
+                    print(f"Saved best model for fold {fold_idx+1}: {model_path}")
             
-            # Inference na validačních datech (každých N epoch)
+            # Inference on validation data (every N epochs)
             if config["inference_every_n_epochs"] > 0 and epoch % config["inference_every_n_epochs"] == 0:
                 if val_indices:
-                    # Vytvoření výstupního adresáře pro tuto epochu
+                    # Create output directory for this epoch
                     output_dir = os.path.join(config["output_dir"], f"fold{fold_idx+1}", f"epoch{epoch}")
                     os.makedirs(output_dir, exist_ok=True)
                     
-                    print(f"\nProvádím validační inferenci pro všechny vzorky v epochě {epoch}:")
+                    print(f"\nPerforming validation inference for all samples in epoch {epoch}:")
                     
-                    # Kontrola, zda existuje uložený nejlepší model
+                    # Check if saved best model exists
                     best_model_path = os.path.join(config["model_dir"], f"best_model_fold{fold_idx+1}.pth")
                     if os.path.exists(best_model_path):
-                        print(f"  Načítám nejlepší model z: {best_model_path}")
-                        # Uložení aktuálního stavu modelu pro pozdější obnovení
+                        print(f"  Loading best model from: {best_model_path}")
+                        # Save current model state for later restoration
                         current_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                         
-                        # Načtení nejlepšího modelu
+                        # Load best model
                         model.load_state_dict(torch.load(best_model_path, map_location=device))
-                        print(f"  Používám nejlepší model s DICE={best_val_dice:.4f} pro inferenci")
+                        print(f"  Using best model with DICE={best_val_dice:.4f} for inference")
                         using_best_model = True
                     else:
-                        print(f"  Nejlepší model nenalezen, používám aktuální model z epochy {epoch}")
+                        print(f"  Best model not found, using current model from epoch {epoch}")
                         using_best_model = False
                     
-                    # Zpracujeme všechny validační vzorky
+                    # Process all validation samples
                     for val_idx_pos, val_idx in enumerate(val_indices):
-                        print(f"  Vzorek {val_idx_pos+1}/{len(val_indices)} (index {val_idx})")
+                        print(f"  Sample {val_idx_pos+1}/{len(val_indices)} (index {val_idx})")
                         
-                        # Cesty k datům
+                        # Paths to data
                         adc_path = os.path.join(config["adc_folder"], full_dataset.adc_files[val_idx])
                         z_path = os.path.join(config["z_folder"], full_dataset.z_files[val_idx])
                         label_path = os.path.join(config["label_folder"], full_dataset.lab_files[val_idx])
                         
-                        # Provedení inference
+                        # Perform inference
                         result = infer_full_volume(
                             model=model,
                             input_paths=[adc_path, z_path],
@@ -557,66 +557,66 @@ def run_cross_validation(config):
                             use_z_adc=config["in_channels"] > 1
                         )
                         
-                        # Výpis metrik
+                        # Print metrics
                         if result["metrics"]:
                             metrics = result["metrics"]
                             patient_id = result.get('patient_id', f'idx_{val_idx}')
-                            print(f"    Pacient {patient_id}: Dice={metrics['dice']:.4f}, MASD={metrics['masd']:.4f}, NSD={metrics['nsd']:.4f}")
+                            print(f"    Patient {patient_id}: Dice={metrics['dice']:.4f}, MASD={metrics['masd']:.4f}, NSD={metrics['nsd']:.4f}")
                         
-                        # Uložení segmentace a vizualizací pomocí nové funkce pro 3 sloupce
+                        # Save segmentation and visualizations using new function for 3 columns
                         from src.inference import save_validation_results_pdf
                         
-                        # Upravíme prefix, aby odrážel, že jde o nejlepší model
+                        # Modify prefix to reflect that it is the best model
                         prefix = f"best_val_{val_idx_pos}" if using_best_model else f"val_{val_idx_pos}"
                         
-                        # Uložení MHA souboru a standardního PDF
+                        # Save MHA file and standard PDF
                         save_segmentation_with_metrics(result, output_dir, prefix=prefix, save_pdf_comparison=False)
                         
-                        # Uložení nového PDF se třemi sloupci (ZADC, LABEL, PRED)
+                        # Save new PDF with three columns (ZADC, LABEL, PRED)
                         pdf_prefix = f"best_val3col_{val_idx_pos}" if using_best_model else f"val3col_{val_idx_pos}"
                         save_validation_results_pdf(result, output_dir, prefix=pdf_prefix)
                     
-                    # Vrácení modelu do původního stavu, pokud byl načten nejlepší model
+                    # Restore model to original state if best model was loaded
                     if using_best_model:
-                        print("  Obnovuji původní stav modelu z aktuální epochy")
+                        print("  Restoring original model state from current epoch")
                         model.load_state_dict(current_model_state)
                     
-                    print(f"Validační inference dokončena. Výsledky jsou uloženy v: {output_dir}")
+                    print(f"Validation inference complete. Results are saved in: {output_dir}")
         
-        # Ukládání metrik pro fold
+        # Save metrics for fold
         all_fold_metrics.append(fold_metrics)
         
-        # Výpis výsledků pro tento fold
+        # Print results for this fold
         if config.get("fixed_split", False):
-            print(f"\nVýsledky pro PEVNÉ ROZDĚLENÍ:")
+            print(f"\nResults for FIXED SPLIT:")
         else:
-            print(f"\nVýsledky pro FOLD {fold_idx+1}:")
+            print(f"\nResults for FOLD {fold_idx+1}:")
             
         for k, v in fold_metrics.items():
             print(f"  {k}: {v:.4f}")
     
-    # Výpis průměrných výsledků přes všechny foldy
+    # Print average results across all folds
     if not config.get("fixed_split", False) and len(all_fold_metrics) > 1:
-        print("\n========== CELKOVÉ VÝSLEDKY ==========")
+        print("\n========== OVERALL RESULTS ==========")
         avg_metrics = {}
         for metric in all_fold_metrics[0].keys():
             avg_value = sum(fold[metric] for fold in all_fold_metrics) / len(all_fold_metrics)
             avg_metrics[metric] = avg_value
-            print(f"Průměr {metric}: {avg_value:.4f}")
+            print(f"Average {metric}: {avg_value:.4f}")
         
-        # Logování finálních metrik do wandb
+        # Log final metrics to wandb
         if config["use_wandb"]:
             for k, v in avg_metrics.items():
                 wandb.run.summary[f"avg_{k}"] = v
     else:
-        # Pevné rozdělení nebo pouze jeden fold
+        # Fixed split or only one fold
         avg_metrics = all_fold_metrics[0]
         
         if config["use_wandb"]:
             for k, v in avg_metrics.items():
                 wandb.run.summary[k] = v
     
-    # Ukončení wandb
+    # Finish wandb
     if config["use_wandb"]:
         wandb.finish()
     
@@ -625,30 +625,30 @@ def run_cross_validation(config):
 
 def run_inference(config):
     """
-    Spustí inferenci na zadaných datech.
+    Runs inference on the specified data.
     
     Args:
-        config: Konfigurační slovník s parametry
+        config: Configuration dictionary with parameters
     """
-    # Kontrola, zda složky existují
+    # Check if folders exist
     for folder in [config["adc_folder"], config["z_folder"]]:
         if not os.path.exists(folder):
-            print(f"Chyba: Složka {folder} neexistuje!")
+            print(f"Error: Folder {folder} does not exist!")
             sys.exit(1)
     
-    # Provedení preprocessingu, pokud je požadováno
+    # Perform preprocessing if requested
     if config.get("preprocessing", False):
         from src.data.preprocessing import prepare_preprocessed_data
         
-        # Nastavení cest pro předzpracovaná data
+        # Set paths for preprocessed data
         preprocessed_adc = config.get("preprocessed_adc_folder", os.path.join(config["output_dir"], "preprocessed/1ADC_ss"))
         preprocessed_z = config.get("preprocessed_z_folder", os.path.join(config["output_dir"], "preprocessed/2Z_ADC"))
         preprocessed_label = None
         if config.get("label_folder"):
             preprocessed_label = config.get("preprocessed_label_folder", os.path.join(config["output_dir"], "preprocessed/3LABEL"))
         
-        # Spuštění preprocessingu
-        print("\nProvádím preprocessing dat...")
+        # Run preprocessing
+        print("\nPerforming data preprocessing...")
         prepare_preprocessed_data(
             adc_folder=config["adc_folder"],
             z_folder=config["z_folder"],
@@ -660,36 +660,36 @@ def run_inference(config):
             allow_normalize_spacing=config.get("allow_normalize_spacing", False)
         )
         
-        # Aktualizace cest na předzpracovaná data
+        # Update paths to preprocessed data
         config["adc_folder"] = preprocessed_adc
         config["z_folder"] = preprocessed_z
         if config.get("label_folder") and preprocessed_label:
             config["label_folder"] = preprocessed_label
         
-        print("Preprocessing dokončen. Používám předzpracovaná data pro inferenci.\n")
+        print("Preprocessing complete. Using preprocessed data for inference.\n")
     
-    # Kontrola, zda existuje cesta k modelu
+    # Check if model path exists
     if not os.path.exists(config["model_path"]):
-        print(f"Chyba: Model {config['model_path']} neexistuje!")
+        print(f"Error: Model {config['model_path']} does not exist!")
         sys.exit(1)
     
-    # Načtení seznamu souborů
+    # Load file list
     adc_files = sorted([f for f in os.listdir(config["adc_folder"]) 
                         if f.endswith(".mha") or f.endswith(".nii") or f.endswith(".nii.gz")])
     z_files = sorted([f for f in os.listdir(config["z_folder"]) 
                       if f.endswith(".mha") or f.endswith(".nii") or f.endswith(".nii.gz")])
     
     if len(adc_files) != len(z_files):
-        print("Chyba: Počet ADC a Z-ADC souborů se neshoduje!")
+        print("Error: Number of ADC and Z-ADC files does not match!")
         sys.exit(1)
     
-    # Vytvoření výstupního adresáře
+    # Create output directory
     os.makedirs(config["output_dir"], exist_ok=True)
     
-    # Určení device
+    # Determine device
     device = torch.device(config["device"])
     
-    # Vytvoření a načtení modelu
+    # Create and load model
     from src.models import create_model
     
     model = create_model(
@@ -702,7 +702,7 @@ def run_inference(config):
     model.load_state_dict(torch.load(config["model_path"], map_location=device))
     model.eval()
     
-    # Načtení expertního modelu, pokud se jedná o MoE inferenci
+    # Load expert model if using MoE inference
     expert_model = None
     if config["inference_mode"] == "moe" and config["expert_model_path"]:
         expert_model = create_model(
@@ -714,12 +714,12 @@ def run_inference(config):
         expert_model.load_state_dict(torch.load(config["expert_model_path"], map_location=device))
         expert_model.eval()
     
-    # Inference na všech souborech
+    # Inference on all files
     for idx, (adc_file, z_file) in enumerate(zip(adc_files, z_files)):
         adc_path = os.path.join(config["adc_folder"], adc_file)
         z_path = os.path.join(config["z_folder"], z_file)
         
-        # Kontrola, zda existuje odpovídající ground truth
+        # Check if corresponding ground truth exists
         label_path = None
         if config["label_folder"] and os.path.exists(config["label_folder"]):
             potential_label_files = [
@@ -732,7 +732,7 @@ def run_inference(config):
                     label_path = path
                     break
         
-        print(f"\nInference pro vzorek {idx+1}/{len(adc_files)}: {adc_file}")
+        print(f"\nInference for sample {idx+1}/{len(adc_files)}: {adc_file}")
         
         if config["inference_mode"] == "moe" and expert_model is not None:
             # MoE inference
@@ -746,11 +746,11 @@ def run_inference(config):
                 use_z_adc=config["in_channels"] > 1
             )
             
-            # Výpis informací o použitém modelu
-            print(f"Použitý model: {result['model_used']}, foreground voxely: {result['foreground_voxels']}")
+            # Print information about the used model
+            print(f"Used model: {result['model_used']}, foreground voxels: {result['foreground_voxels']}")
             
         else:
-            # Standardní inference
+            # Standard inference
             result = infer_full_volume(
                 model=model,
                 input_paths=[adc_path, z_path],
@@ -764,147 +764,147 @@ def run_inference(config):
                 use_z_adc=config["in_channels"] > 1
             )
         
-        # Výpis metrik, pokud jsou k dispozici
+        # Print metrics if available
         if label_path and result["metrics"]:
             metrics = result["metrics"]
-            print(f"Metriky: Dice={metrics['dice']:.4f}, MASD={metrics['masd']:.4f}, NSD={metrics['nsd']:.4f}")
+            print(f"Metrics: Dice={metrics['dice']:.4f}, MASD={metrics['masd']:.4f}, NSD={metrics['nsd']:.4f}")
         
-        # Uložení výsledků
+        # Save results
         output_dir = config["output_dir"]
         save_segmentation_with_metrics(result, output_dir, save_pdf_comparison=config["save_pdf_comparison"])
     
-    print(f"\nInference dokončena. Výsledky jsou uloženy v: {config['output_dir']}")
+    print(f"\nInference complete. Results are saved in: {config['output_dir']}")
 
 
 def main():
-    """Hlavní funkce programu"""
-    # Získání výchozí konfigurace
+    """Main program function"""
+    # Get default configuration
     config = get_default_config()
     
-    # Parsování argumentů
-    parser = argparse.ArgumentParser(description="SWINUNetR pro segmentaci HIE lézí")
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="SWINUNetR for HIE lesion segmentation")
     
-    # Režim běhu
+    # Run mode
     parser.add_argument("--mode", type=str, choices=["train", "inference"], default="train",
-                        help="Režim běhu (train nebo inference)")
+                        help="Run mode (train or inference)")
     
-    # Argumenty datasetu
-    parser.add_argument("--adc_folder", type=str, help="Cesta ke složce s ADC snímky")
-    parser.add_argument("--z_folder", type=str, help="Cesta ke složce s Z-ADC snímky")
-    parser.add_argument("--label_folder", type=str, help="Cesta ke složce s ground truth maskami")
-    parser.add_argument("--preprocessed_adc_folder", type=str, help="Cesta k předzpracované ADC složce")
-    parser.add_argument("--preprocessed_z_folder", type=str, help="Cesta k předzpracované Z_ADC složce")
-    parser.add_argument("--preprocessed_label_folder", type=str, help="Cesta k předzpracované LABEL složce")
+    # Dataset arguments
+    parser.add_argument("--adc_folder", type=str, help="Path to folder with ADC images")
+    parser.add_argument("--z_folder", type=str, help="Path to folder with Z-ADC images")
+    parser.add_argument("--label_folder", type=str, help="Path to folder with ground truth masks")
+    parser.add_argument("--preprocessed_adc_folder", type=str, help="Path to preprocessed ADC folder")
+    parser.add_argument("--preprocessed_z_folder", type=str, help="Path to preprocessed Z_ADC folder")
+    parser.add_argument("--preprocessed_label_folder", type=str, help="Path to preprocessed LABEL folder")
     parser.add_argument("--extended_dataset", action="store_true", 
-                        help="Použít rozšířený dataset (s aug/orig soubory)")
+                        help="Use extended dataset (with aug/orig files)")
     parser.add_argument("--max_aug_per_orig", type=int, default=0,
-                        help="Maximální počet augmentovaných souborů na jeden originální")
+                        help="Maximum number of augmented files per original file")
     
-    # Argumenty modelu
-    parser.add_argument("--model_name", type=str, help="Jméno modelu")
-    parser.add_argument("--model_path", type=str, help="Cesta k uloženému modelu pro inference")
-    parser.add_argument("--expert_model_path", type=str, help="Cesta k expertnímu modelu pro MoE inference")
-    parser.add_argument("--in_channels", type=int, help="Počet vstupních kanálů")
-    parser.add_argument("--out_channels", type=int, help="Počet výstupních tříd")
+    # Model arguments
+    parser.add_argument("--model_name", type=str, help="Model name")
+    parser.add_argument("--model_path", type=str, help="Path to saved model for inference")
+    parser.add_argument("--expert_model_path", type=str, help="Path to expert model for MoE inference")
+    parser.add_argument("--in_channels", type=int, help="Number of input channels")
+    parser.add_argument("--out_channels", type=int, help="Number of output classes")
     parser.add_argument("--drop_rate", type=float, help="Dropout rate")
     
-    # Argumenty trénování
-    parser.add_argument("--batch_size", type=int, help="Velikost dávky")
-    parser.add_argument("--epochs", type=int, help="Počet epoch")
+    # Training arguments
+    parser.add_argument("--batch_size", type=int, help="Batch size")
+    parser.add_argument("--epochs", type=int, help="Number of epochs")
     parser.add_argument("--lr", type=float, help="Learning rate")
-    parser.add_argument("--eta_min", type=float, help="Minimální learning rate pro scheduler")
+    parser.add_argument("--eta_min", type=float, help="Minimum learning rate for scheduler")
     parser.add_argument("--training_mode", type=str, choices=["patch", "full_volume"], 
-                        help="Režim trénování (patch nebo full_volume)")
+                        help="Training mode (patch or full_volume)")
     parser.add_argument("--no_augmentation", action="store_false", dest="use_augmentation",
-                        help="Vypnout augmentaci dat")
+                        help="Turn off data augmentation")
     parser.add_argument("--augmentation_type", type=str, choices=["soft", "heavy"], default="soft",
-                        help="Typ augmentace pro trénování ('soft' pro lehké augmentace, 'heavy' pro silnější augmentace)")
-    parser.add_argument("--n_folds", type=int, help="Počet foldů pro cross-validaci")
-    parser.add_argument("--use_ohem", action="store_true", help="Povolit Online Hard Example Mining")
-    parser.add_argument("--ohem_ratio", type=float, default=0.15, help="Poměr těžkých příkladů pro OHEM")
-    parser.add_argument("--ohem_start_epoch", type=int, default=1, help="Epocha, od které se začne používat OHEM")
-    parser.add_argument("--patches_per_volume", type=int, help="Počet patchů na objem při patch-based trénování")
-    parser.add_argument("--patch_size", type=int, nargs=3, help="Velikost patche (3 hodnoty: výška, šířka, hloubka)")
-    parser.add_argument("--inference_every_n_epochs", type=int, default=0, help="Provést inferenci každých N epoch (0 = vypnuto)")
+                        help="Type of augmentation for training ('soft' for light augmentations, 'heavy' for stronger augmentations)")
+    parser.add_argument("--n_folds", type=int, help="Number of folds for cross-validation")
+    parser.add_argument("--use_ohem", action="store_true", help="Enable Online Hard Example Mining")
+    parser.add_argument("--ohem_ratio", type=float, default=0.15, help="Ratio of hard examples for OHEM")
+    parser.add_argument("--ohem_start_epoch", type=int, default=1, help="Epoch to start using OHEM")
+    parser.add_argument("--patches_per_volume", type=int, help="Number of patches per volume in patch-based training")
+    parser.add_argument("--patch_size", type=int, nargs=3, help="Patch size (3 values: height, width, depth)")
+    parser.add_argument("--inference_every_n_epochs", type=int, default=0, help="Perform inference every N epochs (0 = disabled)")
     
-    # Přidané argumenty pro patch-based training
-    parser.add_argument("--intelligent_sampling", action="store_true", help="Povolit inteligentní vzorkování patchů zaměřené na léze")
-    parser.add_argument("--foreground_ratio", type=float, default=0.7, help="Poměr patchů, které by měly obsahovat léze (0-1)")
-    parser.add_argument("--sw_overlap", type=float, default=0.5, help="Míra překrytí pro sliding window inference (0-1)")
+    # Additional arguments for patch-based training
+    parser.add_argument("--intelligent_sampling", action="store_true", help="Enable intelligent patch sampling focused on lesions")
+    parser.add_argument("--foreground_ratio", type=float, default=0.7, help="Ratio of patches that should contain lesions (0-1)")
+    parser.add_argument("--sw_overlap", type=float, default=0.5, help="Overlap ratio for sliding window inference (0-1)")
     
-    # Argumenty inference
+    # Inference arguments
     parser.add_argument("--inference_mode", type=str, choices=["standard", "moe"], default="standard", 
-                        help="Režim inference (standard nebo moe)")
+                        help="Inference mode (standard or moe)")
     parser.add_argument("--no_tta", action="store_false", dest="use_tta",
-                        help="Vypnout Test-Time Augmentation při inferenci")
-    parser.add_argument("--moe_threshold", type=int, help="Threshold pro přepnutí na expertní model")
+                        help="Turn off Test-Time Augmentation during inference")
+    parser.add_argument("--moe_threshold", type=int, help="Threshold for switching to expert model")
     parser.add_argument("--save_pdf_comparison", action="store_true",
-                        help="Vytvořit PDF s porovnáním ground truth a predikce (jen když je dostupný label)")
+                        help="Create PDF with comparison of ground truth and prediction (only when label is available)")
     
-    # Obecné argumenty
-    parser.add_argument("--seed", type=int, help="Seed pro reprodukovatelnost")
-    parser.add_argument("--device", type=str, help="Zařízení pro výpočet (cuda nebo cpu)")
-    parser.add_argument("--output_dir", type=str, help="Výstupní adresář")
+    # General arguments
+    parser.add_argument("--seed", type=int, help="Seed for reproducibility")
+    parser.add_argument("--device", type=str, help="Device for computation (cuda or cpu)")
+    parser.add_argument("--output_dir", type=str, help="Output directory")
     
-    # Parametry dat a normalizace
+    # Data parameters and normalization
     parser.add_argument("--use_normalization", action="store_true", 
-                        help="Použít normalizaci dat")
+                        help="Use data normalization")
     parser.add_argument("--allow_normalize_spacing", action="store_true", 
-                        help="Povolit normalizaci rozestupů voxelů")
+                        help="Allow normalization of voxel spacing")
     parser.add_argument("--preprocessing", action="store_true",
-                        help="Provést preprocessing dat (bounding box, crop, padding) před trénováním")
+                        help="Perform data preprocessing (bounding box, crop, padding) before training")
     
-    # Parametry fixního rozdělení dat
+    # Fixed data split parameters
     parser.add_argument("--fixed_split", action="store_true",
-                        help="Použít pevné rozdělení dat místo k-fold CV (80/20)")
+                        help="Use fixed data split instead of k-fold CV (80/20)")
     parser.add_argument("--fixed_split_seed", type=int, default=None,
-                        help="Seed pro vytvoření pevného rozdělení dat (pokud se liší od hlavního seedu)")
+                        help="Seed for creating fixed data split (if different from main seed)")
     parser.add_argument("--fixed_split_file", type=str, default=None,
-                        help="Cesta k souboru s uloženým pevným rozdělením dat (.pkl)")
+                        help="Path to file with saved fixed data split (.pkl)")
 
-    # Parametry ztráty a metrik
+    # Loss and metrics parameters
     parser.add_argument("--loss_name", type=str, 
                         choices=["weighted_ce_dice", "log_cosh_dice", "focal_tversky", 
                                  "log_hausdorff", "focal", "focal_dice_combo", 
                                  "focal_ce_combo", "dice_focal", "weighted_ce"],
-                        help="Jméno ztrátové funkce")
-    parser.add_argument("--focal_alpha", type=float, help="Alpha parametr pro Focal loss")
-    parser.add_argument("--focal_gamma", type=float, help="Gamma parametr pro Focal loss")
-    parser.add_argument("--alpha_mix", type=float, help="Míchací parametr pro ztrátové funkce")
+                        help="Loss function name")
+    parser.add_argument("--focal_alpha", type=float, help="Alpha parameter for Focal loss")
+    parser.add_argument("--focal_gamma", type=float, help="Gamma parameter for Focal loss")
+    parser.add_argument("--alpha_mix", type=float, help="Mixing parameter for loss functions")
     parser.add_argument("--compute_surface_metrics", action="store_true", 
-                        help="Počítat povrchové metriky (MASD, NSD)")
+                        help="Compute surface metrics (MASD, NSD)")
 
-    # TTA parametry
-    parser.add_argument("--tta_angle_max", type=int, help="Maximální úhel pro TTA rotace")
+    # TTA parameters
+    parser.add_argument("--tta_angle_max", type=int, help="Maximum angle for TTA rotations")
 
-    # Wandb argumenty
+    # Wandb arguments
     parser.add_argument("--no_wandb", action="store_false", dest="use_wandb",
-                        help="Vypnout logování do wandb")
-    parser.add_argument("--wandb_project", type=str, help="Jméno projektu ve wandb")
-    parser.add_argument("--wandb_run_name", type=str, help="Jméno běhu ve wandb")
+                        help="Turn off logging to wandb")
+    parser.add_argument("--wandb_project", type=str, help="Project name in wandb")
+    parser.add_argument("--wandb_run_name", type=str, help="Run name in wandb")
     
-    # Inpaintnuté léze
+    # Inpainted lesions
     parser.add_argument("--use_inpainted_lesions", action="store_true", 
-                        help="Povolit augmentaci s inpaintnutými lézemi")
+                        help="Enable augmentation with inpainted lesions")
     parser.add_argument("--inpaint_adc_folder", type=str,
-                        help="Složka s inpaintnutými ADC soubory")
+                        help="Folder with inpainted ADC files")
     parser.add_argument("--inpaint_z_folder", type=str,
-                        help="Složka s inpaintnutými Z-ADC soubory")
+                        help="Folder with inpainted Z-ADC files")
     parser.add_argument("--inpaint_label_folder", type=str,
-                        help="Složka s inpaintnutými LABEL soubory")
+                        help="Folder with inpainted LABEL files")
     parser.add_argument("--inpaint_probability", type=float, default=0.2,
-                        help="Pravděpodobnost použití inpaintnutých dat (0.0-1.0)")
+                        help="Probability of using inpainted data (0.0-1.0)")
 
-    # Aktualizace konfigurace z argumentů
+    # Update configuration from arguments
     args = parser.parse_args()
     config = parse_args_to_config(args, config)
     
-    # Spuštění požadovaného režimu
+    # Run requested mode
     if config["mode"] == "train":
-        print("Spouštění trénování...")
+        print("Starting training...")
         run_cross_validation(config)
     else:
-        print("Spouštění inference...")
+        print("Starting inference...")
         run_inference(config)
 
 

@@ -4,16 +4,16 @@ from monai.networks.nets import SwinUNETR
 
 def create_model(model_name="SwinUNETR", in_channels=2, out_channels=2, drop_rate=0.15):
     """
-    Vytvoří model podle zadaného jména
+    Creates a model based on the specified name
     
     Args:
-        model_name (str): Jméno modelu (SwinUNETR, AttentionUNet, UNet3Plus, UNet3D)
-        in_channels (int): Počet vstupních kanálů
-        out_channels (int): Počet výstupních kanálů
-        drop_rate (float): Dropout rate pro SwinUNETR
+        model_name (str): Model name (SwinUNETR, AttentionUNet, UNet3Plus, UNet3D)
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        drop_rate (float): Dropout rate for SwinUNETR
         
     Returns:
-        nn.Module: Instance vytvořeného modelu
+        nn.Module: Instance of the created model
     """
     if model_name == "SwinUNETR":
         model = SwinUNETR(

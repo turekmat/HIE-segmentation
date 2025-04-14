@@ -14,31 +14,31 @@ from ..data.dataset import get_subject_id_from_filename
 
 def custom_collate_fn(batch):
     """
-    Vlastní collate funkce, která umožňuje zpracovat tensory různých velikostí.
-    Každý vzorek je zpracován samostatně, bez stack operace.
+    Custom collate function that allows processing tensors of different sizes.
+    Each sample is processed individually, without stack operation.
     
     Args:
-        batch: List vzorků z datasetu
+        batch: List of samples from the dataset
         
     Returns:
-        List obsahující dvojice (inputs, labels)
+        List containing pairs of (inputs, labels)
     """
     return batch
 
 
 def train_one_epoch(model, loader, optimizer, loss_fn, device="cuda"):
     """
-    Trénuje model jednu epochu.
+    Trains the model for one epoch.
     
     Args:
-        model: Model k trénování
-        loader: DataLoader s trénovacími daty
-        optimizer: Optimalizátor
-        loss_fn: Ztrátová funkce
-        device: Zařízení pro výpočet
+        model: Model to train
+        loader: DataLoader with training data
+        optimizer: Optimizer
+        loss_fn: Loss function
+        device: Computation device
         
     Returns:
-        float: Průměrná ztráta za celou epochu
+        float: Average loss for the entire epoch
     """
     model.train()
     running_loss = 0.0
@@ -57,25 +57,23 @@ def train_one_epoch(model, loader, optimizer, loss_fn, device="cuda"):
 
 def optimal_sliding_window_inference(model, inputs, roi_size, sw_batch_size, overlap=0.5, mode="gaussian", device=None):
     """
-    Vylepšená verze sliding window inference s pokročilým vážením predikcí.
+    Enhanced version of sliding window inference with advanced prediction weighting.
     
     Args:
-        model: Model pro inferenci
-        inputs: Vstupní tensor (B, C, D, H, W)
-        roi_size: Velikost patche pro inferenci (D, H, W)
-        sw_batch_size: Batch size pro sliding window
-        overlap: Míra překrytí mezi sousedními patchy (0-1)
-        mode: Metoda vážení překrývajících se predikcí ("gaussian" nebo "constant")
-        device: Zařízení pro výpočet
+        model: Model for inference
+        inputs: Input tensor (B, C, D, H, W)
+        roi_size: Patch size for inference (D, H, W)
+        sw_batch_size: Batch size for sliding window
+        overlap: Overlap ratio between adjacent patches (0-1)
+        mode: Method for weighting overlapping predictions ("gaussian" or "constant")
+        device: Computation device
         
     Returns:
-        torch.Tensor: Predikce pro celý vstup
+        torch.Tensor: Prediction for the entire input
     """
-    # Přidána kontrola zařízení
     if device is None:
         device = inputs.device
     
-    # Přidána optimalizace vážení predikcí
     sigma_scale = 0.125
     extra_params = {}
     
@@ -88,23 +86,16 @@ def optimal_sliding_window_inference(model, inputs, roi_size, sw_batch_size, ove
     else:
         extra_params = {"mode": "constant"}
     
-    # Získání rozměrů vstupních dat a patch
     input_shape = list(inputs.shape[2:])  # [D, H, W]
     patch_shape = roi_size
     
-    # Zjištění, které dimenze patche jsou stejně velké nebo větší než odpovídající dimenze vstupu
-    # Pro tyto dimenze použijeme velmi malý overlap, abychom zabránili problémům s paddingem
     adaptive_overlap = [overlap] * len(input_shape)
     for i in range(len(input_shape)):
         if patch_shape[i] >= input_shape[i]:
-            # Pro dimenze, kde je patch větší nebo stejný jako vstup, použijeme minimální overlap
             adaptive_overlap[i] = 0.01
-            # Úprava velikosti patche, pokud je větší než vstup
             patch_shape[i] = min(patch_shape[i], input_shape[i])
     
-    # Použití adaptivního overlapu
     try:
-        # Využijeme MONAI implementaci
         return sliding_window_inference(
             inputs=inputs,
             roi_size=patch_shape,
@@ -114,22 +105,20 @@ def optimal_sliding_window_inference(model, inputs, roi_size, sw_batch_size, ove
             **extra_params
         )
     except RuntimeError as e:
-        # Záložní řešení v případě problémů - zkusíme použít menší overlap
-        print(f"Varování: Chyba při sliding window inference. Zkouším s menším overlapem. Původní chyba: {e}")
+        print(f"Warning: Error during sliding window inference. Trying with smaller overlap. Original error: {e}")
         try:
             return sliding_window_inference(
                 inputs=inputs,
                 roi_size=patch_shape,
                 sw_batch_size=sw_batch_size,
                 predictor=model,
-                overlap=0.01,  # Minimální overlap
+                overlap=0.01,  # Minimal overlap
                 **extra_params
             )
         except Exception as e2:
-            # Jako poslední možnost zkusíme zpracovat celý vstup najednou
-            print(f"Varování: Záložní řešení selhalo. Pokusím se zpracovat vstup najednou. Chyba: {e2}")
+            print(f"Warning: Fallback solution failed. Attempting to process the entire input at once. Error: {e2}")
             if inputs.shape[2] * inputs.shape[3] * inputs.shape[4] > 128 * 128 * 64:
-                print("Varování: Vstup je velmi velký pro zpracování najednou!")
+                print("Warning: Input is very large for processing at once!")
             return model(inputs)
 
 
@@ -138,24 +127,24 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
                        batch_size=1, patch_size=(64, 64, 64), tta_forward_fn=None,
                        sw_overlap=0.5):
     """
-    Validuje model na validační sadě.
+    Validates the model on the validation set.
     
     Args:
-        model: Model k validaci
-        loader: DataLoader s validačními daty
-        loss_fn: Ztrátová funkce
-        device: Zařízení pro výpočet
-        training_mode: "full_volume" nebo "patch"
-        compute_surface_metrics: Zda počítat metriky povrchu
-        USE_TTA: Zda použít Test-Time Augmentation
-        TTA_ANGLE_MAX: Maximální úhel pro TTA
-        batch_size: Velikost dávky
-        patch_size: Velikost patche pro inferenci
-        tta_forward_fn: Funkce pro Test-Time Augmentation
-        sw_overlap: Míra překrytí pro sliding window (0-1)
+        model: Model to validate
+        loader: DataLoader with validation data
+        loss_fn: Loss function
+        device: Computation device
+        training_mode: "full_volume" or "patch"
+        compute_surface_metrics: Whether to compute surface metrics
+        USE_TTA: Whether to use Test-Time Augmentation
+        TTA_ANGLE_MAX: Maximum angle for TTA
+        batch_size: Batch size
+        patch_size: Patch size for inference
+        tta_forward_fn: Function for Test-Time Augmentation
+        sw_overlap: Overlap ratio for sliding window (0-1)
         
     Returns:
-        dict: Slovník s metrikami
+        dict: Dictionary with metrics
     """
     model.eval()
     running_loss = 0.0
@@ -164,42 +153,37 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
     running_nsd  = 0.0
     count_samples = 0
     
-    # Kontrola velikosti patche pro SR data
     original_patch_size = patch_size
     
     tta_transforms = get_tta_transforms(angle_max=TTA_ANGLE_MAX) if USE_TTA else None
 
     with torch.no_grad():
-        # Upraveno pro zpracování custom_collate_fn výstupu
         for batch in loader:
             for sample in batch:
                 try:
                     inputs, labels = sample
                     inputs, labels = inputs.unsqueeze(0).to(device), labels.unsqueeze(0).to(device)
                     
-                    # Pro super-resolution data kontrola rozměrů a potenciální úprava patch size
                     if training_mode == "patch":
                         input_shape = inputs.shape[2:]  # [D, H, W]
                         if any(p >= s for p, s in zip(patch_size, input_shape)):
-                            # Vytvoříme nový patch size, který bude respektovat velikost vstupu
                             adjusted_patch_size = [min(p, s) for p, s in zip(patch_size, input_shape)]
                             patch_size = adjusted_patch_size
                     
                     if training_mode == "patch":
                         try:
-                            # Použít optimalizovaný sliding window
                             logits = optimal_sliding_window_inference(
                                 model=model, 
                                 inputs=inputs, 
                                 roi_size=patch_size, 
                                 sw_batch_size=1, 
                                 overlap=sw_overlap,
-                                mode="gaussian",  # Nebo "constant" pro jednoduché průměrování
+                                mode="gaussian",  
                                 device=device
                             )
                         except Exception as e:
-                            print(f"Chyba při sliding window inference: {e}")
-                            print("Zkouším zpracovat vstup najednou...")
+                            print(f"Error during sliding window inference: {e}")
+                            print("Trying to process the input at once...")
                             logits = model(inputs)
                     else:
                         logits = model(inputs)
@@ -212,7 +196,7 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
                             avg_probs = tta_forward_fn(model, inputs, device, tta_transforms)
                             pred = np.argmax(avg_probs, axis=0)
                         except Exception as e:
-                            print(f"Chyba při TTA: {e}. Používám inferenci bez TTA.")
+                            print(f"Error during TTA: {e}. Using inference without TTA.")
                             pred = torch.argmax(logits, dim=1).cpu().numpy()[0]
                     else:
                         pred = torch.argmax(logits, dim=1).cpu().numpy()[0]
@@ -223,24 +207,21 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
 
                     if compute_surface_metrics:
                         try:
-                            # Zde by bylo dobré importovat compute_masd a compute_nsd ze správného místa
-                            # například z utils.metrics
                             from ..utils.metrics import compute_masd, compute_nsd
                             masd = compute_masd(pred, label, spacing=(1,1,1), sampling_ratio=0.5)
                             nsd  = compute_nsd(pred, label, spacing=(1,1,1), sampling_ratio=0.5)
                             running_masd += masd
                             running_nsd  += nsd
                         except Exception as e:
-                            print(f"Chyba při výpočtu povrchových metrik: {e}")
-                            if count_samples == 0:  # Jen při prvním vzorku vypisovat detaily
-                                print(f"Tvary: pred {pred.shape}, label {label.shape}")
+                            print(f"Error computing surface metrics: {e}")
+                            if count_samples == 0:  
+                                print(f"Shapes: pred {pred.shape}, label {label.shape}")
                                 
                     count_samples += 1
                 except Exception as e:
-                    print(f"Chyba při zpracování vzorku: {e}")
+                    print(f"Error processing sample: {e}")
                     continue
     
-    # Obnovení původní velikosti patch
     patch_size = original_patch_size
     
     avg_loss = running_loss / count_samples if count_samples > 0 else 0.0
@@ -256,29 +237,26 @@ def validate_one_epoch(model, loader, loss_fn, device="cuda", training_mode="ful
 
 def setup_training(config, dataset_train, dataset_val, device="cuda"):
     """
-    Připraví vše potřebné pro trénování (model, optimizer, loss_fn, scheduler).
+    Prepares everything needed for training (model, optimizer, loss_fn, scheduler).
     
     Args:
-        config: Konfigurační slovník
-        dataset_train: Trénovací dataset
-        dataset_val: Validační dataset
-        device: Zařízení pro výpočet
+        config: Configuration dictionary
+        dataset_train: Training dataset
+        dataset_val: Validation dataset
+        device: Computation device
         
     Returns:
         tuple: (model, optimizer, loss_fn, scheduler, train_loader, val_loader)
     """
-    # Vytvoření dataloaderů
     train_loader = DataLoader(dataset_train, batch_size=config["batch_size"], shuffle=True)
     
-    # Pro validační loader používáme custom_collate_fn pro zpracování různých velikostí tensorů
     val_loader = DataLoader(
         dataset_val, 
-        batch_size=config.get("val_batch_size", 2),  # Můžeme použít menší batch size pro validaci
+        batch_size=config.get("val_batch_size", 2),  
         shuffle=False,
-        collate_fn=custom_collate_fn  # Použití vlastní collate_fn
+        collate_fn=custom_collate_fn  
     )
     
-    # Vytvoření modelu
     model = create_model(
         model_name=config["model_name"],
         in_channels=config["in_channels"],
@@ -286,7 +264,6 @@ def setup_training(config, dataset_train, dataset_val, device="cuda"):
         drop_rate=config.get("drop_rate", 0.15)
     ).to(device)
     
-    # Vytvoření ztrátové funkce
     from ..loss import get_loss_function
     
     class_weights = None
@@ -307,7 +284,6 @@ def setup_training(config, dataset_train, dataset_val, device="cuda"):
         out_channels=config["out_channels"]
     )
     
-    # Vytvoření optimizeru a scheduleru
     optimizer = optim.Adam(model.parameters(), lr=config["lr"])
     scheduler = lr_scheduler.CosineAnnealingLR(
         optimizer,
@@ -320,36 +296,34 @@ def setup_training(config, dataset_train, dataset_val, device="cuda"):
 
 def train_with_ohem(model, dataset_train, optimizer, loss_fn, batch_size=1, device="cuda", ohem_ratio=0.15):
     """
-    Trénuje model pomocí Online Hard Example Mining (OHEM).
-    OHEM vybírá patche, které jsou pro model nejtěžší (mají nejvyšší ztrátu).
+    Trains the model using Online Hard Example Mining (OHEM).
+    OHEM selects patches that are most difficult for the model (have the highest loss).
     
     Args:
-        model: Model k trénování
-        dataset_train: Dataset s trénovacími daty
-        optimizer: Optimalizátor
-        loss_fn: Ztrátová funkce
-        batch_size: Velikost dávky
-        device: Zařízení pro výpočet
-        ohem_ratio: Poměr těžkých příkladů k vybranému počtu (např. 0.15 = 15% nejtěžších patchů)
+        model: Model to train
+        dataset_train: Dataset with training data
+        optimizer: Optimizer
+        loss_fn: Loss function
+        batch_size: Batch size
+        device: Computation device
+        ohem_ratio: Ratio of hard examples to select (e.g., 0.15 = 15% of the hardest patches)
         
     Returns:
-        float: Průměrná ztráta za epochu
+        float: Average loss for the epoch
     """
     model.train()
-    max_samples = 5000  # Maximální počet vzorků pro OHEM analýzu
+    max_samples = 5000  
     sample_limit = min(len(dataset_train), max_samples)
-    weighted_subset_size = min(int(sample_limit * ohem_ratio), batch_size * 100)  # Omezení počtu vzorků
+    weighted_subset_size = min(int(sample_limit * ohem_ratio), batch_size * 100)  
     
-    print(f"OHEM: Analýza {sample_limit} vzorků z celkových {len(dataset_train)}")
+    print(f"OHEM: Analyzing {sample_limit} samples from total {len(dataset_train)}")
     
     loss_per_sample = []
     indices = []
     
-    # Uvolnění paměti
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     
-    # Získáme ztrátu pro každý vzorek
     for idx in range(sample_limit):
         try:
             inputs, labels = dataset_train[idx]
@@ -361,87 +335,74 @@ def train_with_ohem(model, dataset_train, optimizer, loss_fn, batch_size=1, devi
                 loss_per_sample.append(loss.item())
                 indices.append(idx)
                 
-            # Uvolnění paměti
             del inputs, labels, logits, loss
             if idx % 100 == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 
         except Exception as e:
-            print(f"Chyba při OHEM analýze vzorku {idx}: {e}")
+            print(f"Error during OHEM analysis of sample {idx}: {e}")
             continue
     
     if not loss_per_sample:
-        print("Varování: Žádné vzorky nebyly úspěšně analyzovány pro OHEM. Přeskakuji OHEM trénink.")
+        print("Warning: No samples were successfully analyzed for OHEM. Skipping OHEM training.")
         return 0.0
     
-    # Seřadíme vzorky podle ztráty (sestupně) a vybereme nejhorší
     sorted_indices = [indices[i] for i in np.argsort(loss_per_sample)[::-1]]
     hard_indices = sorted_indices[:weighted_subset_size]
     
-    print(f"OHEM: Vybráno {len(hard_indices)} těžkých vzorků pro trénink")
+    print(f"OHEM: Selected {len(hard_indices)} hard samples for training")
     
-    # Vytvoříme Subset datasetu s těžkými vzorky
     from torch.utils.data import Subset, DataLoader
     hard_subset = Subset(dataset_train, hard_indices)
     weighted_train_loader = DataLoader(hard_subset, batch_size=batch_size, shuffle=True)
     
-    # Trénování na těžkých patchech
     running_loss = 0.0
     batch_count = 0
     
-    # Nastavíme model do trénovacího módu
     model.train()
     
-    # Uvolnění paměti
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     
-    # Trénování na těžkých vzorcích s gradient accumulation pro stabilitu
     for inputs, labels in weighted_train_loader:
         try:
             inputs, labels = inputs.to(device), labels.to(device)
             
-            # Forward pass
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = loss_fn(outputs, labels)
             
-            # Backward pass
             loss.backward()
             optimizer.step()
             
             running_loss += loss.item()
             batch_count += 1
             
-            # Uvolnění paměti
             del inputs, labels, outputs, loss
             if batch_count % 5 == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 
         except Exception as e:
-            print(f"Chyba při OHEM tréninku na dávce: {e}")
+            print(f"Error during OHEM training on batch: {e}")
             continue
     
-    # Vrátíme průměrnou ztrátu
     return running_loss / max(1, batch_count)
 
 
 def create_cv_folds(dataset, n_folds, extended_dataset=False):
     """
-    Rozdělí dataset na k-fold cross-validační sady.
+    Divides the dataset into k-fold cross-validation sets.
     
     Args:
-        dataset: Dataset k rozdělení
-        n_folds: Počet foldů
-        extended_dataset: Zda se jedná o rozšířený dataset s orig/aug soubory
+        dataset: Dataset to divide
+        n_folds: Number of folds
+        extended_dataset: Whether this is an extended dataset with orig/aug files
         
     Returns:
-        list: Seznam dvojic (train_indices, val_indices)
+        list: List of pairs (train_indices, val_indices)
     """
-    # Získání všech souborů
     all_files = dataset.adc_files
     
-    # Rozdělení podle subjektů
     subject_to_indices = {}
     for i, fname in enumerate(all_files):
         subj_id = get_subject_id_from_filename(fname)
@@ -449,28 +410,23 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
             subject_to_indices[subj_id] = []
         subject_to_indices[subj_id].append(i)
     
-    # Seznam všech subjektů (promíchaný)
     all_subjects = list(subject_to_indices.keys())
     np.random.shuffle(all_subjects)
     
-    # Výpočet velikosti foldu
     num_subjects = len(all_subjects)
     fold_size = num_subjects // n_folds
     
-    print(f"Celkem {num_subjects} unikátních subjektů, vytváříme {n_folds}-fold cross-validaci.\n")
+    print(f"Total {num_subjects} unique subjects, creating {n_folds}-fold cross-validation.\n")
     
     folds = []
     for fold_idx in range(n_folds):
-        # Výběr validačních subjektů
         fold_val_start = fold_idx * fold_size
         fold_val_end = (fold_idx + 1) * fold_size if fold_idx < n_folds - 1 else num_subjects
         val_subjects = all_subjects[fold_val_start:fold_val_end]
         train_subjects = list(set(all_subjects) - set(val_subjects))
         
-        # Výběr validačních indexů
         val_indices = []
         if extended_dataset:
-            # Pokud máme rozšířený dataset, vybíráme pouze soubory bez "_aug" označení
             for subj_id in val_subjects:
                 indices_for_subject = subject_to_indices[subj_id]
                 for idx in indices_for_subject:
@@ -478,18 +434,16 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
                     if "_aug" not in adc_fname.lower():
                         val_indices.append(idx)
         else:
-            # Klasický dataset: použijeme všechny soubory daného subjektu
             for subj_id in val_subjects:
                 indices_for_subject = subject_to_indices[subj_id]
                 val_indices.extend(indices_for_subject)
         
-        # Výběr trénovacích indexů - všechny soubory subjektů, které nejsou ve validaci
         train_indices = []
         for subj_id in train_subjects:
             indices_for_subject = subject_to_indices[subj_id]
             train_indices.extend(indices_for_subject)
         
-        print(f"Fold {fold_idx+1}: Val subjekty={len(val_subjects)}, Val vzorky={len(val_indices)}, Trén subjekty={len(train_subjects)}, Trén vzorky={len(train_indices)}")
+        print(f"Fold {fold_idx+1}: Val subjects={len(val_subjects)}, Val samples={len(val_indices)}, Train subjects={len(train_subjects)}, Train samples={len(train_indices)}")
         folds.append((train_indices, val_indices))
     
     return folds
@@ -497,21 +451,20 @@ def create_cv_folds(dataset, n_folds, extended_dataset=False):
 
 def log_metrics(metrics, epoch, fold_idx=None, lr=None, wandb_enabled=True):
     """
-    Loguje metriky do konzole a do wandb.
+    Logs metrics to console and to wandb.
     
     Args:
-        metrics: Slovník s metrikami
-        epoch: Aktuální epocha
-        fold_idx: Index aktuálního foldu (None pro pevné rozdělení)
-        lr: Aktuální learning rate
-        wandb_enabled: Zda je wandb povoleno
+        metrics: Dictionary with metrics
+        epoch: Current epoch
+        fold_idx: Index of current fold (None for fixed split)
+        lr: Current learning rate
+        wandb_enabled: Whether wandb is enabled
     """
-    # Výpis do konzole
     log_str = ""
     if fold_idx is not None:
         log_str += f"[FOLD {fold_idx+1}] "
     else:
-        log_str += "[PEVNÉ ROZDĚLENÍ] "
+        log_str += "[FIXED SPLIT] "
     
     log_str += f"Epoch {epoch} => "
     
@@ -523,14 +476,13 @@ def log_metrics(metrics, epoch, fold_idx=None, lr=None, wandb_enabled=True):
     
     print(log_str)
     
-    # Logování do wandb
     if wandb_enabled:
         wandb_log = metrics.copy()
         
         if fold_idx is not None:
             wandb_log['fold'] = fold_idx + 1
         else:
-            wandb_log['fold'] = 0  # 0 označuje pevné rozdělení
+            wandb_log['fold'] = 0  # 0 indicates fixed split
         
         wandb_log['epoch'] = epoch
         

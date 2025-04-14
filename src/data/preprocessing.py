@@ -8,27 +8,27 @@ import torch
 
 def filter_augmented_files(file_list, max_aug):
     """
-    Filtruje augmentované soubory podle původního souboru.
-    Zachovává originální soubory a omezuje počet augmentovaných
-    souborů na max_aug na jeden originální soubor.
+    Filters augmented files based on the original file.
+    Keeps original files and limits the number of augmented
+    files to max_aug per original file.
 
     Args:
-        file_list: Seznam souborů k filtrování
-        max_aug: Maximální počet augmentovaných souborů na jeden originální
+        file_list: List of files to filter
+        max_aug: Maximum number of augmented files per original
 
     Returns:
-        Seznam filtrovaných souborů
+        Filtered list of files
     """
     grouped = {}
     for f in file_list:
         key = get_base_id(f)
         if '_aug' in f.lower():
-            # Soubor je augmentovaný
+
             if key not in grouped:
                 grouped[key] = {'orig': None, 'aug': []}
             grouped[key]['aug'].append(f)
         else:
-            # Soubor bez "_aug" je považován za originální
+
             if key not in grouped:
                 grouped[key] = {'orig': None, 'aug': []}
             grouped[key]['orig'] = f
@@ -48,7 +48,7 @@ def filter_augmented_files(file_list, max_aug):
 
 def get_base_id(filename: str):
     """
-    Získá základní ID souboru bez sufixu _aug.
+    Gets the base ID of the file without the suffix _aug.
     """
     filename_lower = filename.lower()
     if '_aug' in filename_lower:
@@ -69,43 +69,39 @@ def soft_3d_augmentation(
     smooth_sigma=1.0
 ):
     """
-    Provádí lehkou augmentaci 3D objemů.
+    Performs a light 3D volume augmentation.
 
     Args:
-        adc_np: Numpy array ADC objemu
-        zadc_np: Numpy array Z-ADC objemu
-        label_np: Numpy array masky
-        angle_max: Maximální úhel rotace
-        p_flip: Pravděpodobnost horizontálního flipu
-        p_noise: Pravděpodobnost přidání šumu
-        noise_std: Směrodatná odchylka pro šum
-        p_smooth: Pravděpodobnost vyhlazení
-        smooth_sigma: Sigma pro Gaussovské vyhlazení
+        adc_np: Numpy array ADC volume
+        zadc_np: Numpy array Z-ADC volume
+        label_np: Numpy array mask
+        angle_max: Maximum rotation angle
+        p_flip: Probability of horizontal flip
+        p_noise: Probability of adding noise
+        noise_std: Standard deviation for noise
+        p_smooth: Probability of smoothing
+        smooth_sigma: Sigma for Gaussian smoothing
 
     Returns:
-        Augmentované objemy (adc_np, zadc_np, label_np)
+        Augmented volumes (adc_np, zadc_np, label_np)
     """
-    # Horizontální flip
     if random.random() < p_flip:
       adc_np = np.flip(adc_np, axis=2).copy()
       zadc_np = np.flip(zadc_np, axis=2).copy()
       label_np = np.flip(label_np, axis=2).copy()
 
-    # Náhodná rotace
     angle = random.uniform(-angle_max, angle_max)
-    axes  = random.choice([(0, 1), (0, 2), (1, 2)])  # vybereme jednu dvojici os
+    axes  = random.choice([(0, 1), (0, 2), (1, 2)])  # choose one pair of axes
     adc_np = rotate(adc_np,   angle=angle, axes=axes, reshape=False, order=1, mode='nearest')
     zadc_np = rotate(zadc_np, angle=angle, axes=axes, reshape=False, order=1, mode='nearest')
     label_np = rotate(label_np, angle=angle, axes=axes, reshape=False, order=0, mode='nearest')
 
-    # Gaussovský šum
     if random.random() < p_noise:
         noise_adc = np.random.normal(0, noise_std, size=adc_np.shape)
         noise_z   = np.random.normal(0, noise_std, size=zadc_np.shape)
         adc_np   = adc_np + noise_adc
         zadc_np  = zadc_np + noise_z
 
-    # Gaussovské vyhlazení
     if random.random() < p_smooth:
         adc_np   = gaussian_filter(adc_np, sigma=smooth_sigma)
         zadc_np  = gaussian_filter(zadc_np, sigma=smooth_sigma)
@@ -129,27 +125,27 @@ def heavy_3d_augmentation(
     p_intensity=0.7
 ):
     """
-    Provádí silnější augmentaci 3D objemů, vhodnou pro zvýšení robustnosti modelu.
+    Performs a stronger 3D volume augmentation, suitable for increasing model robustness.
 
     Args:
-        adc_np: Numpy array ADC objemu (rozsah 0-1)
-        zadc_np: Numpy array Z-ADC objemu (rozsah -10 až +10)
-        label_np: Numpy array masky
-        angle_max: Maximální úhel rotace (±stupňů)
-        p_flip_x: Pravděpodobnost flipu podél osy X
-        p_flip_y: Pravděpodobnost flipu podél osy Y
-        p_flip_z: Pravděpodobnost flipu podél osy Z
-        p_noise: Pravděpodobnost přidání šumu
-        noise_std_adc: Směrodatná odchylka pro šum v ADC mapě
-        noise_std_zadc: Směrodatná odchylka pro šum v Z-ADC mapě
-        p_smooth: Pravděpodobnost vyhlazení
-        smooth_sigma_range: Rozsah sigma parametru pro Gaussovské vyhlazení
-        p_intensity: Pravděpodobnost úpravy intenzity
+        adc_np: Numpy array ADC volume (range 0-1)
+        zadc_np: Numpy array Z-ADC volume (range -10 to +10)
+        label_np: Numpy array mask
+        angle_max: Maximum rotation angle (±degrees)
+        p_flip_x: Probability of flip along X axis
+        p_flip_y: Probability of flip along Y axis
+        p_flip_z: Probability of flip along Z axis
+        p_noise: Probability of adding noise
+        noise_std_adc: Standard deviation for noise in ADC map
+        noise_std_zadc: Standard deviation for noise in Z-ADC map
+        p_smooth: Probability of smoothing
+        smooth_sigma_range: Range of sigma parameter for Gaussian smoothing
+        p_intensity: Probability of intensity adjustment
 
     Returns:
-        Augmentované objemy (adc_np, zadc_np, label_np)
+        Augmented volumes (adc_np, zadc_np, label_np)
     """
-    # 1. Náhodné flipy podél všech os
+
     if random.random() < p_flip_x:
         adc_np = np.flip(adc_np, axis=0).copy()
         zadc_np = np.flip(zadc_np, axis=0).copy()
@@ -165,78 +161,63 @@ def heavy_3d_augmentation(
         zadc_np = np.flip(zadc_np, axis=2).copy()
         label_np = np.flip(label_np, axis=2).copy()
 
-    # 2. Náhodná výraznější rotace
     angle = random.uniform(-angle_max, angle_max)
-    axes = random.choice([(0, 1), (0, 2), (1, 2)])  # vybereme jednu dvojici os
+    axes = random.choice([(0, 1), (0, 2), (1, 2)])
     adc_np = rotate(adc_np, angle=angle, axes=axes, reshape=False, order=1, mode='nearest')
     zadc_np = rotate(zadc_np, angle=angle, axes=axes, reshape=False, order=1, mode='nearest')
     label_np = rotate(label_np, angle=angle, axes=axes, reshape=False, order=0, mode='nearest')
 
-    # 3. Úpravy intenzity (brightness, contrast, gamma)
+
     if random.random() < p_intensity:
-        # Pro ADC mapu - rozsah 0-1
-        # Brightness: Přičítáme/odečítáme konstantu
-        brightness_factor_adc = random.uniform(-0.1, 0.1)  # ±10% z rozsahu 0-1
+
+        brightness_factor_adc = random.uniform(-0.1, 0.1)
         
-        # Kontrast: Násobíme konstantou a upravujeme offset pro zachování rozsahu
+
         contrast_factor_adc = random.uniform(0.8, 1.2)
         
-        # Gamma korekce: Používáme mocniny (hodnoty < 1 zesvětlují, > 1 ztmavují)
         gamma_factor_adc = random.uniform(0.8, 1.2)
         
-        # Aplikace na ADC - zachováváme rozsah 0-1
-        # Aplikujeme jen na nenulové hodnoty, abychom zachovali nulové pozadí
+
         mask_nonzero = adc_np > 0
         
-        # Brightness
+
         adc_np[mask_nonzero] = adc_np[mask_nonzero] + brightness_factor_adc
         
-        # Kontrast
         mean_adc = np.mean(adc_np[mask_nonzero])
         adc_np[mask_nonzero] = (adc_np[mask_nonzero] - mean_adc) * contrast_factor_adc + mean_adc
         
-        # Gamma - upraveno pro předcházení chybě "invalid value encountered in power"
-        # Zajistíme, že všechny hodnoty jsou kladné před použitím mocniny
-        adc_np_positive = np.maximum(adc_np[mask_nonzero], 1e-8)  # Malá kladná hodnota místo 0
+
+        adc_np_positive = np.maximum(adc_np[mask_nonzero], 1e-8)
         adc_np[mask_nonzero] = np.power(adc_np_positive, gamma_factor_adc)
         
-        # Oříznutí hodnot na rozsah 0-1
         adc_np = np.clip(adc_np, 0, 1)
         
-        # Pro ZADC mapu - úpravy musí respektovat rozsah -10 až +10
-        # ZADC se počítá z ADC, takže upravíme proporčně 
-        # Brightness - přičtení offset k nenulové části
         brightness_factor_zadc = random.uniform(-1.0, 1.0)
         
-        # Kontrast
         contrast_factor_zadc = random.uniform(0.85, 1.15)
         
-        # Aplikace na ZADC
         mask_nonzero_z = zadc_np != 0
         
-        # Brightness
         zadc_np[mask_nonzero_z] = zadc_np[mask_nonzero_z] + brightness_factor_zadc
         
-        # Kontrast
         mean_zadc = np.mean(zadc_np[mask_nonzero_z]) if np.any(mask_nonzero_z) else 0
         zadc_np[mask_nonzero_z] = (zadc_np[mask_nonzero_z] - mean_zadc) * contrast_factor_zadc + mean_zadc
-        
-        # Oříznutí hodnot na rozumný rozsah
+
         zadc_np = np.clip(zadc_np, -15, 15)
 
-    # 4. Gaussovský šum (různé parametry pro ADC a ZADC)
+    # 4. Gaussian noise (different parameters for ADC and ZADC)
     if random.random() < p_noise:
-        # Pro ADC (0-1)
+        # For ADC (0-1)
         noise_adc = np.random.normal(0, noise_std_adc, size=adc_np.shape)
         adc_np = adc_np + noise_adc
         adc_np = np.clip(adc_np, 0, 1)
         
-        # Pro ZADC (-10 až +10)
+        # For ZADC (-10 to +10)
         noise_zadc = np.random.normal(0, noise_std_zadc, size=zadc_np.shape)
         zadc_np = zadc_np + noise_zadc
         zadc_np = np.clip(zadc_np, -15, 15)
 
-    # 5. Gaussovské vyhlazení s variabilním parametrem
+    # 5. Gaussian smoothing with variable parameter
     if random.random() < p_smooth:
         sigma = random.uniform(smooth_sigma_range[0], smooth_sigma_range[1])
         adc_np = gaussian_filter(adc_np, sigma=sigma)
@@ -252,25 +233,25 @@ def prepare_preprocessed_data(
     allow_normalize_spacing=False
 ):
     """
-    Předzpracovává data z původních složek do výstupních složek.
-    Implementace založená na optimalizovaném předzpracování.
+    Preprocesses data from original folders into output folders.
+    Implementation based on optimized preprocessing.
     
     Args:
-        adc_folder: Vstupní složka s ADC skeny
-        z_folder: Vstupní složka s Z-ADC skeny
-        label_folder: Vstupní složka s maskami
-        output_adc: Výstupní složka pro předzpracované ADC skeny
-        output_z: Výstupní složka pro předzpracované Z-ADC skeny
-        output_label: Výstupní složka pro předzpracované masky
-        normalize: Zda normalizovat intenzity (True/False)
-        allow_normalize_spacing: Zda normalizovat prostorové kroky (True/False)
+        adc_folder: Input folder with ADC scans
+        z_folder: Input folder with Z-ADC scans
+        label_folder: Input folder with masks
+        output_adc: Output folder for preprocessed ADC scans
+        output_z: Output folder for preprocessed Z-ADC scans
+        output_label: Output folder for preprocessed masks
+        normalize: Whether to normalize intensities (True/False)
+        allow_normalize_spacing: Whether to normalize spacing (True/False)
     """
-    # Kontrola a vytvoření výstupních adresářů
+    # Check and create output directories
     for output_dir in [output_adc, output_z, output_label]:
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
     
-    # Kontrola, zda již existují předzpracované soubory
+    # Check if preprocessed files already exist
     existing_files = [
         len([f for f in os.listdir(dir) if f.endswith('.mha')]) 
         for dir in [output_adc, output_z, output_label]
@@ -280,7 +261,7 @@ def prepare_preprocessed_data(
         print("Preprocessed data already exist. Skipping preprocessing.")
         return
     
-    # Načtení seznamu souborů
+    # Load file list
     adc_files = sorted([f for f in os.listdir(adc_folder) if f.endswith('.mha')])
     z_files = sorted([f for f in os.listdir(z_folder) if f.endswith('.mha')])
     label_files = sorted([f for f in os.listdir(label_folder) if f.endswith('.mha')])
@@ -290,63 +271,63 @@ def prepare_preprocessed_data(
     
     print(f"Processing {len(adc_files)} file sets...")
     
-    # Zpracování každého souboru
+    # Process each file
     for i, (adc_name, zadc_name, label_name) in enumerate(zip(adc_files, z_files, label_files)):
         print(f"Processing {i+1}/{len(adc_files)}: {adc_name}")
         
-        # Načtení vstupních skenů
+        # Load input scans
         adc_img = sitk.ReadImage(os.path.join(adc_folder, adc_name))
         zadc_img = sitk.ReadImage(os.path.join(z_folder, zadc_name))
         label_img = sitk.ReadImage(os.path.join(label_folder, label_name))
         
-        # 1. Normalizace spacing - jako první krok pokud je povoleno
+        # 1. Normalize spacing - as first step if allowed
         if allow_normalize_spacing:
             adc_img = normalize_spacing(adc_img)
             zadc_img = normalize_spacing(zadc_img)
             label_img = normalize_spacing(label_img)
         
-        # Uložení metadat pro pozdější použití
+        # Save metadata for later use
         final_spacing = adc_img.GetSpacing()
         final_direction = adc_img.GetDirection()
         final_origin = adc_img.GetOrigin()
         
-        # 2. Převod na numpy arrays
+        # 2. Convert to numpy arrays
         adc_np = sitk.GetArrayFromImage(adc_img)
         zadc_np = sitk.GetArrayFromImage(zadc_img)
         label_np = sitk.GetArrayFromImage(label_img)
         
-        # 3. Vytvoření masky mozku a normalizace
+        # 3. Create brain mask and normalize
         if normalize:
             brain_mask = (adc_np > 0) & (zadc_np > 0)
             adc_np = z_score_normalize(adc_np, brain_mask)
             zadc_np = z_score_normalize(zadc_np, brain_mask)
         
-        # 4. Výpočet a aplikace bounding boxu
+        # 4. Compute and apply bounding box
         bounding_box = compute_largest_3d_bounding_box([adc_np, zadc_np], threshold=0)
         adc_np, zadc_np, label_np = crop_to_largest_bounding_box(adc_np, zadc_np, label_np, bounding_box, margin=5)
         
-        # 5. Padding na násobky 32
+        # 5. Padding to multiples of 32
         adc_np = pad_3d_all_dims_to_multiple_of_32(adc_np)
         zadc_np = pad_3d_all_dims_to_multiple_of_32(zadc_np)
         label_np = pad_3d_all_dims_to_multiple_of_32(label_np)
         
-        # Převod zpět na SimpleITK objemy
+        # Convert back to SimpleITK images
         processed_adc = sitk.GetImageFromArray(adc_np)
         processed_z = sitk.GetImageFromArray(zadc_np)
         processed_label = sitk.GetImageFromArray(label_np)
         
-        # Nastavení metadat
+        # Set metadata
         for img in [processed_adc, processed_z, processed_label]:
             img.SetSpacing(final_spacing)
             img.SetDirection(final_direction)
             img.SetOrigin(final_origin)
         
-        # Uložení předzpracovaných souborů
+        # Save preprocessed files
         sitk.WriteImage(processed_adc, os.path.join(output_adc, adc_name))
         sitk.WriteImage(processed_z, os.path.join(output_z, zadc_name))
         sitk.WriteImage(processed_label, os.path.join(output_label, label_name))
         
-        # Uvolnění paměti
+        # Free memory
         del adc_np, zadc_np, label_np, processed_adc, processed_z, processed_label
         import gc
         gc.collect()
@@ -358,7 +339,7 @@ def prepare_preprocessed_data(
 
 def compute_largest_3d_bounding_box(volumes, threshold=0):
     """
-    Vypočítá největší bounding box ze všech vstupních objemů.
+    Computes the largest bounding box from all input volumes.
     """
     min_coords = np.array([np.inf, np.inf, np.inf])
     max_coords = np.array([-np.inf, -np.inf, -np.inf])
@@ -376,11 +357,11 @@ def compute_largest_3d_bounding_box(volumes, threshold=0):
 
 def crop_to_largest_bounding_box(adc_np, zadc_np, label_np, bounding_box, margin=5):
     """
-    Ořízne objemy podle bounding boxu s přidaným okrajem.
+    Crops volumes based on the bounding box with added margin.
     """
     (minD, maxD), (minH, maxH), (minW, maxW) = bounding_box
 
-    # Přidání okraje
+    # Add margin
     minD = max(0, minD - margin)
     maxD = min(adc_np.shape[0], maxD + margin)
     minH = max(0, minH - margin)
@@ -388,7 +369,7 @@ def crop_to_largest_bounding_box(adc_np, zadc_np, label_np, bounding_box, margin
     minW = max(0, minW - margin)
     maxW = min(adc_np.shape[2], maxW + margin)
 
-    # Oříznutí objemů
+    # Crop volumes
     return (adc_np[minD:maxD, minH:maxH, minW:maxW],
             zadc_np[minD:maxD, minH:maxH, minW:maxW],
             label_np[minD:maxD, minH:maxH, minW:maxW])
@@ -396,7 +377,7 @@ def crop_to_largest_bounding_box(adc_np, zadc_np, label_np, bounding_box, margin
 
 def pad_3d_all_dims_to_multiple_of_32(volume_3d, mode="edge"):
     """
-    Přidá padding k 3D objemu tak, aby všechny rozměry byly násobky 32.
+    Adds padding to a 3D volume so that all dimensions are multiples of 32.
     """
     def pad_dim_to_32(dim_size):
         return ((dim_size - 1) // 32 + 1) * 32 if dim_size % 32 != 0 else dim_size
@@ -413,7 +394,7 @@ def pad_3d_all_dims_to_multiple_of_32(volume_3d, mode="edge"):
 
 def normalize_spacing(image_sitk, target_spacing=(1.0, 1.0, 1.0)):
     """
-    Normalizuje spacing obrazu na cílový spacing.
+    Normalizes the spacing of the image to the target spacing.
     """
     original_spacing = image_sitk.GetSpacing()
     original_size = image_sitk.GetSize()
@@ -429,10 +410,10 @@ def normalize_spacing(image_sitk, target_spacing=(1.0, 1.0, 1.0)):
     resample.SetTransform(sitk.Transform())
     resample.SetDefaultPixelValue(0)
 
-    # Interpolace: lineární pro obrazy, nearest neighbor pro masky
-    if image_sitk.GetPixelID() in [sitk.sitkUInt8, sitk.sitkInt8]:  # pravděpodobně maska
+    # Interpolation: linear for images, nearest neighbor for masks
+    if image_sitk.GetPixelID() in [sitk.sitkUInt8, sitk.sitkInt8]:  # probably mask
         resample.SetInterpolator(sitk.sitkNearestNeighbor)
-    else:  # pravděpodobně obraz
+    else:  # probably image
         resample.SetInterpolator(sitk.sitkLinear)
 
     return resample.Execute(image_sitk)
@@ -440,8 +421,8 @@ def normalize_spacing(image_sitk, target_spacing=(1.0, 1.0, 1.0)):
 
 def z_score_normalize(image_np, mask=None):
     """
-    Provádí Z-score normalizaci objemu (odečtení průměru a vydělení směrodatnou odchylkou).
-    Pokud je poskytnutá maska, normalizace se provádí pouze na základě voxelů v masce.
+    Performs Z-score normalization of the volume (subtracting mean and dividing by standard deviation).
+    If a mask is provided, normalization is performed only on voxels in the mask.
     """
     valid_voxels = image_np[mask > 0] if mask is not None else image_np
     mean, std = np.mean(valid_voxels), np.std(valid_voxels)
@@ -450,12 +431,12 @@ def z_score_normalize(image_np, mask=None):
 
 def apply_tta_transform(volume, transform):
     """
-    Aplikuje transformaci pro Test-Time Augmentaci.
+    Applies transformation for Test-Time Augmentation.
     """
     do_flip = transform.get('flip', False)
     rotation = transform.get('rotation', None)
     
-    # Pokud máme (C, D, H, W), pracujeme s každým kanálem zvlášť
+    # If we have (C, D, H, W), we work with each channel separately
     if len(volume.shape) == 4:
         C, D, H, W = volume.shape
         transformed = np.zeros_like(volume)
@@ -463,14 +444,14 @@ def apply_tta_transform(volume, transform):
             transformed[c] = apply_tta_transform(volume[c], transform)
         return transformed
     
-    # Pro samostatný objem (D, H, W)
+    # For standalone volume (D, H, W)
     result = volume.copy()
     
-    # Horizontální flip (pokud je požadován)
+    # Horizontal flip (if requested)
     if do_flip:
         result = np.flip(result, axis=2)
     
-    # Rotace (pokud je požadována)
+    # Rotation (if requested)
     if rotation is not None:
         angle = rotation['angle']
         axes = rotation['axes']
@@ -481,12 +462,11 @@ def apply_tta_transform(volume, transform):
 
 def invert_tta_transform(volume, transform):
     """
-    Invertuje transformaci TTA, aby se výsledky mohly průměrovat.
+    Inverts the TTA transformation so that results can be averaged.
     """
     do_flip = transform.get('flip', False)
     rotation = transform.get('rotation', None)
     
-    # Pokud máme (C, D, H, W), pracujeme s každým kanálem zvlášť
     if len(volume.shape) == 4:
         C, D, H, W = volume.shape
         inverted = np.zeros_like(volume)
@@ -496,13 +476,11 @@ def invert_tta_transform(volume, transform):
     
     result = volume.copy()
     
-    # Invertujeme rotaci (pokud byla aplikována)
     if rotation is not None:
-        angle = -rotation['angle']  # Obrátit úhel
+        angle = -rotation['angle']
         axes = rotation['axes']
         result = rotate(result, angle=angle, axes=axes, reshape=False, order=1, mode='nearest')
     
-    # Invertujeme flip (pokud byl aplikován)
     if do_flip:
         result = np.flip(result, axis=2)
     
@@ -511,7 +489,7 @@ def invert_tta_transform(volume, transform):
 
 def get_tta_transforms(angle_max=3):
     """
-    Vytvoří seznam transformací pro Test-Time Augmentaci.
+    Creates a list of transformations for Test-Time Augmentation.
     """
     tta_transforms = []
     flips = [False, True]
@@ -533,54 +511,46 @@ def select_inpainted_data_for_training(original_adc_path, original_z_path, origi
                                        inpaint_adc_dir, inpaint_z_dir, inpaint_label_dir,
                                        probability=0.2):
     """
-    S určitou pravděpodobností vybere inpaintnutá data pro trénink místo originálních.
+    Selects inpainted data for training with a certain probability instead of original data.
     
     Args:
-        original_adc_path: Cesta k původnímu ADC souboru
-        original_z_path: Cesta k původnímu Z-ADC souboru
-        original_label_path: Cesta k původnímu LABEL souboru
-        inpaint_adc_dir: Složka s inpaintnutými ADC soubory
-        inpaint_z_dir: Složka s inpaintnutými Z-ADC soubory
-        inpaint_label_dir: Složka s inpaintnutými LABEL soubory
-        probability: Pravděpodobnost výběru inpaintnutých dat (0.0-1.0)
+        original_adc_path: Path to the original ADC file
+        original_z_path: Path to the original Z-ADC file
+        original_label_path: Path to the original LABEL file
+        inpaint_adc_dir: Directory with inpainted ADC files
+        inpaint_z_dir: Directory with inpainted Z-ADC files
+        inpaint_label_dir: Directory with inpainted LABEL files
+        probability: Probability of selecting inpainted data (0.0-1.0)
         
     Returns:
-        Tuple (adc_path, z_path, label_path) s cestami k souborům, které se mají použít pro trénink
+        Tuple (adc_path, z_path, label_path) with paths to files that should be used for training
     """
-    # S pravděpodobností (1-probability) vrátíme původní soubory
     if random.random() > probability:
         return original_adc_path, original_z_path, original_label_path
     
-    # Získání základního ID subjektu (např. 'MGHNICU_015')
     original_adc_basename = os.path.basename(original_adc_path)
     match = re.match(r'(.*?-VISIT_\d+)', original_adc_basename)
     if not match:
-        # Pokud nelze získat formát, vrátíme původní soubory
         print(f"Warning: Could not extract prefix from {original_adc_basename}")
         return original_adc_path, original_z_path, original_label_path
     
     prefix = match.group(1)
     
-    # Hledáme inpaintnuté soubory se stejným prefixem
     inpaint_adc_files = [f for f in os.listdir(inpaint_adc_dir) 
                         if f.startswith(prefix) and 'LESIONED_ADC' in f]
     
     if not inpaint_adc_files:
-        # Nenašli jsme žádné inpaintnuté verze, vrátíme původní
         print(f"Info: No inpainted files found for {prefix}")
         return original_adc_path, original_z_path, original_label_path
     
-    # Náhodně vybereme jeden inpaintnutý ADC soubor
     selected_inpaint_adc = random.choice(inpaint_adc_files)
     
-    # Extrahujeme sample ID z názvu
     match = re.search(r'sample(\d+)', selected_inpaint_adc)
     if not match:
         return original_adc_path, original_z_path, original_label_path
     
     sample_id = match.group(1)
     
-    # Hledáme odpovídající ZADC a LABEL soubory
     inpaint_z_pattern = f"{prefix}-.*sample{sample_id}-LESIONED_ZADC.mha"
     inpaint_label_pattern = f"{prefix}-.*sample{sample_id}_combined_lesion.mha"
     
@@ -590,7 +560,6 @@ def select_inpainted_data_for_training(original_adc_path, original_z_path, origi
                             if re.match(inpaint_label_pattern, f)]
     
     if not inpaint_z_matches or not inpaint_label_matches:
-        # Nenašli jsme kompletní trojici, vrátíme původní
         print(f"Warning: Couldn't find complete inpainted set for {prefix} sample{sample_id}")
         return original_adc_path, original_z_path, original_label_path
     
@@ -598,10 +567,9 @@ def select_inpainted_data_for_training(original_adc_path, original_z_path, origi
     inpaint_z_path = os.path.join(inpaint_z_dir, inpaint_z_matches[0])
     inpaint_label_path = os.path.join(inpaint_label_dir, inpaint_label_matches[0])
     
-    # Stručný výpis
     print(f"Using inpainted data: {prefix} (sample{sample_id})")
     
     return inpaint_adc_path, inpaint_z_path, inpaint_label_path
 
-# Zpětná kompatibilita - alias funkce
+# Backward compatibility - alias function
 random_3d_augmentation = soft_3d_augmentation 
