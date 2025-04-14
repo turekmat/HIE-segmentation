@@ -598,14 +598,8 @@ def select_inpainted_data_for_training(original_adc_path, original_z_path, origi
     inpaint_z_path = os.path.join(inpaint_z_dir, inpaint_z_matches[0])
     inpaint_label_path = os.path.join(inpaint_label_dir, inpaint_label_matches[0])
     
-    # Rozšířený výpis pro lepší ověření
-    print(f"\nUsing inpainted data for {prefix} (sample{sample_id}):")
-    print(f"  ORIGINAL -> ADC: {os.path.basename(original_adc_path)}")
-    print(f"  ORIGINAL -> ZADC: {os.path.basename(original_z_path) if original_z_path else 'None'}")
-    print(f"  ORIGINAL -> LABEL: {os.path.basename(original_label_path)}")
-    print(f"  INPAINTED -> ADC: {selected_inpaint_adc}")
-    print(f"  INPAINTED -> ZADC: {inpaint_z_matches[0]}")
-    print(f"  INPAINTED -> LABEL: {inpaint_label_matches[0]}\n")
+    # Stručný výpis
+    print(f"Using inpainted data: {prefix} (sample{sample_id})")
     
     return inpaint_adc_path, inpaint_z_path, inpaint_label_path
 
