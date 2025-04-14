@@ -528,5 +528,86 @@ def get_tta_transforms(angle_max=3):
             tta_transforms.append({"flip": flip, "rotation": rot})
     return tta_transforms
 
+
+def select_inpainted_data_for_training(original_adc_path, original_z_path, original_label_path, 
+                                       inpaint_adc_dir, inpaint_z_dir, inpaint_label_dir,
+                                       probability=0.2):
+    """
+    S určitou pravděpodobností vybere inpaintnutá data pro trénink místo originálních.
+    
+    Args:
+        original_adc_path: Cesta k původnímu ADC souboru
+        original_z_path: Cesta k původnímu Z-ADC souboru
+        original_label_path: Cesta k původnímu LABEL souboru
+        inpaint_adc_dir: Složka s inpaintnutými ADC soubory
+        inpaint_z_dir: Složka s inpaintnutými Z-ADC soubory
+        inpaint_label_dir: Složka s inpaintnutými LABEL soubory
+        probability: Pravděpodobnost výběru inpaintnutých dat (0.0-1.0)
+        
+    Returns:
+        Tuple (adc_path, z_path, label_path) s cestami k souborům, které se mají použít pro trénink
+    """
+    # S pravděpodobností (1-probability) vrátíme původní soubory
+    if random.random() > probability:
+        return original_adc_path, original_z_path, original_label_path
+    
+    # Získání základního ID subjektu (např. 'MGHNICU_015')
+    original_adc_basename = os.path.basename(original_adc_path)
+    match = re.match(r'(.*?-VISIT_\d+)', original_adc_basename)
+    if not match:
+        # Pokud nelze získat formát, vrátíme původní soubory
+        print(f"Warning: Could not extract prefix from {original_adc_basename}")
+        return original_adc_path, original_z_path, original_label_path
+    
+    prefix = match.group(1)
+    
+    # Hledáme inpaintnuté soubory se stejným prefixem
+    inpaint_adc_files = [f for f in os.listdir(inpaint_adc_dir) 
+                        if f.startswith(prefix) and 'LESIONED_ADC' in f]
+    
+    if not inpaint_adc_files:
+        # Nenašli jsme žádné inpaintnuté verze, vrátíme původní
+        print(f"Info: No inpainted files found for {prefix}")
+        return original_adc_path, original_z_path, original_label_path
+    
+    # Náhodně vybereme jeden inpaintnutý ADC soubor
+    selected_inpaint_adc = random.choice(inpaint_adc_files)
+    
+    # Extrahujeme sample ID z názvu
+    match = re.search(r'sample(\d+)', selected_inpaint_adc)
+    if not match:
+        return original_adc_path, original_z_path, original_label_path
+    
+    sample_id = match.group(1)
+    
+    # Hledáme odpovídající ZADC a LABEL soubory
+    inpaint_z_pattern = f"{prefix}-.*sample{sample_id}-LESIONED_ZADC.mha"
+    inpaint_label_pattern = f"{prefix}-.*sample{sample_id}_combined_lesion.mha"
+    
+    inpaint_z_matches = [f for f in os.listdir(inpaint_z_dir) 
+                         if re.match(inpaint_z_pattern, f)]
+    inpaint_label_matches = [f for f in os.listdir(inpaint_label_dir) 
+                            if re.match(inpaint_label_pattern, f)]
+    
+    if not inpaint_z_matches or not inpaint_label_matches:
+        # Nenašli jsme kompletní trojici, vrátíme původní
+        print(f"Warning: Couldn't find complete inpainted set for {prefix} sample{sample_id}")
+        return original_adc_path, original_z_path, original_label_path
+    
+    inpaint_adc_path = os.path.join(inpaint_adc_dir, selected_inpaint_adc)
+    inpaint_z_path = os.path.join(inpaint_z_dir, inpaint_z_matches[0])
+    inpaint_label_path = os.path.join(inpaint_label_dir, inpaint_label_matches[0])
+    
+    # Rozšířený výpis pro lepší ověření
+    print(f"\nUsing inpainted data for {prefix} (sample{sample_id}):")
+    print(f"  ORIGINAL -> ADC: {os.path.basename(original_adc_path)}")
+    print(f"  ORIGINAL -> ZADC: {os.path.basename(original_z_path) if original_z_path else 'None'}")
+    print(f"  ORIGINAL -> LABEL: {os.path.basename(original_label_path)}")
+    print(f"  INPAINTED -> ADC: {selected_inpaint_adc}")
+    print(f"  INPAINTED -> ZADC: {inpaint_z_matches[0]}")
+    print(f"  INPAINTED -> LABEL: {inpaint_label_matches[0]}\n")
+    
+    return inpaint_adc_path, inpaint_z_path, inpaint_label_path
+
 # Zpětná kompatibilita - alias funkce
 random_3d_augmentation = soft_3d_augmentation 

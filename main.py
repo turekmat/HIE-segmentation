@@ -365,7 +365,12 @@ def run_cross_validation(config):
                 extended_dataset=config["extended_dataset"],
                 max_aug_per_orig=config.get("max_aug_per_orig", 0),
                 use_z_adc=config["in_channels"] > 1,
-                augmentation_type=config.get("augmentation_type", "soft")
+                augmentation_type=config.get("augmentation_type", "soft"),
+                use_inpainted_lesions=config.get("use_inpainted_lesions", False),
+                inpaint_adc_folder=config.get("inpaint_adc_folder"),
+                inpaint_z_folder=config.get("inpaint_z_folder"),
+                inpaint_label_folder=config.get("inpaint_label_folder"),
+                inpaint_probability=config.get("inpaint_probability", 0.2)
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
@@ -403,7 +408,12 @@ def run_cross_validation(config):
                 extended_dataset=config["extended_dataset"],
                 max_aug_per_orig=config.get("max_aug_per_orig", 0),
                 use_z_adc=config["in_channels"] > 1,
-                augmentation_type=config.get("augmentation_type", "soft")
+                augmentation_type=config.get("augmentation_type", "soft"),
+                use_inpainted_lesions=config.get("use_inpainted_lesions", False),
+                inpaint_adc_folder=config.get("inpaint_adc_folder"),
+                inpaint_z_folder=config.get("inpaint_z_folder"),
+                inpaint_label_folder=config.get("inpaint_label_folder"),
+                inpaint_probability=config.get("inpaint_probability", 0.2)
             )
             
             # Použití indexů pomocí IndexedDatasetWrapper
@@ -873,6 +883,18 @@ def main():
     parser.add_argument("--wandb_project", type=str, help="Jméno projektu ve wandb")
     parser.add_argument("--wandb_run_name", type=str, help="Jméno běhu ve wandb")
     
+    # Inpaintnuté léze
+    parser.add_argument("--use_inpainted_lesions", action="store_true", 
+                        help="Povolit augmentaci s inpaintnutými lézemi")
+    parser.add_argument("--inpaint_adc_folder", type=str,
+                        help="Složka s inpaintnutými ADC soubory")
+    parser.add_argument("--inpaint_z_folder", type=str,
+                        help="Složka s inpaintnutými Z-ADC soubory")
+    parser.add_argument("--inpaint_label_folder", type=str,
+                        help="Složka s inpaintnutými LABEL soubory")
+    parser.add_argument("--inpaint_probability", type=float, default=0.2,
+                        help="Pravděpodobnost použití inpaintnutých dat (0.0-1.0)")
+
     # Aktualizace konfigurace z argumentů
     args = parser.parse_args()
     config = parse_args_to_config(args, config)

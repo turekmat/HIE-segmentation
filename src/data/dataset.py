@@ -6,7 +6,7 @@ import random
 from torch.utils.data import Dataset
 import re
 
-from .preprocessing import random_3d_augmentation, filter_augmented_files, get_base_id, heavy_3d_augmentation, soft_3d_augmentation
+from .preprocessing import random_3d_augmentation, filter_augmented_files, get_base_id, heavy_3d_augmentation, soft_3d_augmentation, select_inpainted_data_for_training
 
 class BONBID3DFullVolumeDataset(Dataset):
     """
@@ -23,10 +23,18 @@ class BONBID3DFullVolumeDataset(Dataset):
         max_aug_per_orig: Maximální počet augmentovaných souborů na jeden originální
         use_z_adc: Zda používat Z-ADC modalitu (pokud False, použije se pouze ADC)
         augmentation_type: Typ augmentace ('soft' nebo 'heavy')
+        use_inpainted_lesions: Zda používat inpaintnuté léze během tréninku
+        inpaint_adc_folder: Složka s inpaintnutými ADC soubory
+        inpaint_z_folder: Složka s inpaintnutými Z-ADC soubory
+        inpaint_label_folder: Složka s inpaintnutými LABEL soubory
+        inpaint_probability: Pravděpodobnost použití inpaintnutých dat (0.0-1.0)
     """
     def __init__(self, adc_folder, z_folder, label_folder, augment=False, 
                  allowed_patient_ids=None, extended_dataset=True, max_aug_per_orig=0, 
-                 use_z_adc=True, augmentation_type='soft'):
+                 use_z_adc=True, augmentation_type='soft',
+                 use_inpainted_lesions=False, inpaint_adc_folder=None, 
+                 inpaint_z_folder=None, inpaint_label_folder=None,
+                 inpaint_probability=0.2):
         super().__init__()
 
         self.adc_folder = adc_folder
@@ -37,6 +45,22 @@ class BONBID3DFullVolumeDataset(Dataset):
         self.max_aug_per_orig = max_aug_per_orig
         self.use_z_adc = use_z_adc
         self.augmentation_type = augmentation_type
+        
+        # Nastavení pro inpaintnuté léze
+        self.use_inpainted_lesions = use_inpainted_lesions
+        self.inpaint_adc_folder = inpaint_adc_folder
+        self.inpaint_z_folder = inpaint_z_folder
+        self.inpaint_label_folder = inpaint_label_folder
+        self.inpaint_probability = inpaint_probability
+        
+        # Kontrola správného nastavení parametrů pro inpaintnuté léze
+        if use_inpainted_lesions and (not inpaint_adc_folder or not inpaint_label_folder):
+            print("Warning: Inpainted lesions enabled but folders not provided. Disabling inpainted lesions.")
+            self.use_inpainted_lesions = False
+        
+        if use_inpainted_lesions and self.use_z_adc and not inpaint_z_folder:
+            print("Warning: Z-ADC is enabled but inpaint_z_folder not provided. Disabling inpainted lesions.")
+            self.use_inpainted_lesions = False
 
         self.adc_files = sorted([f for f in os.listdir(adc_folder) if f.endswith('.mha')])
         
@@ -77,13 +101,26 @@ class BONBID3DFullVolumeDataset(Dataset):
     def __getitem__(self, idx):
         adc_path   = os.path.join(self.adc_folder, self.adc_files[idx])
         label_path = os.path.join(self.label_folder, self.lab_files[idx])
+        
+        if self.use_z_adc and self.z_folder:
+            zadc_path = os.path.join(self.z_folder, self.z_files[idx])
+        else:
+            zadc_path = None
+        
+        # Možnost výběru inpaintnutých dat s danou pravděpodobností
+        if self.use_inpainted_lesions:
+            adc_path, zadc_path, label_path = select_inpainted_data_for_training(
+                adc_path, zadc_path, label_path,
+                self.inpaint_adc_folder, self.inpaint_z_folder, self.inpaint_label_folder,
+                self.inpaint_probability
+            )
 
+        # Načtení vybraných dat
         adc_np   = sitk.GetArrayFromImage(sitk.ReadImage(adc_path))
         label_np = sitk.GetArrayFromImage(sitk.ReadImage(label_path))
 
         # Načtení Z-ADC mapy pouze pokud se používá
-        if self.use_z_adc and self.z_folder:
-            zadc_path = os.path.join(self.z_folder, self.z_files[idx])
+        if self.use_z_adc and zadc_path:
             zadc_np  = sitk.GetArrayFromImage(sitk.ReadImage(zadc_path))
         else:
             # Vytvoříme dummy tensor nulový, který nahradíme později (nebude použit)
