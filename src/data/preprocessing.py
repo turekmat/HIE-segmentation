@@ -394,7 +394,18 @@ def pad_3d_all_dims_to_multiple_of_32(volume_3d, mode="edge"):
 
 def normalize_spacing(image_sitk, target_spacing=(1.0, 1.0, 1.0)):
     """
-    Normalizes the spacing of the image to the target spacing.
+    Normalizes the spacing of the image to the target spacing using trilinear interpolation
+    for image data and nearest neighbor for mask data.
+    
+    This ensures uniformity in image resolution by interpolating all images to a fixed resolution
+    of 1mm × 1mm × 1mm, preserving the spatial meaning of data.
+    
+    Args:
+        image_sitk: SimpleITK image to normalize
+        target_spacing: Target spacing (default: 1.0, 1.0, 1.0) in mm
+        
+    Returns:
+        Normalized SimpleITK image with target spacing
     """
     original_spacing = image_sitk.GetSpacing()
     original_size = image_sitk.GetSize()
@@ -410,11 +421,11 @@ def normalize_spacing(image_sitk, target_spacing=(1.0, 1.0, 1.0)):
     resample.SetTransform(sitk.Transform())
     resample.SetDefaultPixelValue(0)
 
-    # Interpolation: linear for images, nearest neighbor for masks
+    # Interpolation: trilinear for images, nearest neighbor for masks
     if image_sitk.GetPixelID() in [sitk.sitkUInt8, sitk.sitkInt8]:  # probably mask
         resample.SetInterpolator(sitk.sitkNearestNeighbor)
-    else:  # probably image
-        resample.SetInterpolator(sitk.sitkLinear)
+    else:  # probably image - use trilinear interpolation
+        resample.SetInterpolator(sitk.sitkLinear)  # trilinear interpolation
 
     return resample.Execute(image_sitk)
 
